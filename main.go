@@ -662,8 +662,17 @@ const indexHTML = `<!doctype html>
       border:1px solid var(--border); background:var(--surface); border-radius:12px;
       padding:14px 16px; margin-bottom:14px;
     }
-    .title { font-weight:700; letter-spacing:.3px; }
+		.title { font-size:22px; font-weight:700; letter-spacing:.4px; line-height:1.1; }
 	.title-row { display:flex; align-items:center; gap:10px; }
+		.cockpit-badge {
+			font-size:11px;
+			color:var(--muted);
+			background:var(--surface);
+			border:1px solid var(--border);
+			border-radius:6px;
+			padding:2px 8px;
+			line-height:1.2;
+		}
     .badge { color:var(--muted); border:1px solid var(--border); border-radius:999px; padding:3px 10px; font-size:12px; }
     .kpis { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-bottom:14px; }
     .kpi { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:12px; }
@@ -757,7 +766,7 @@ const indexHTML = `<!doctype html>
   <div class="wrap">
     <div class="header">
       <div>
-		<div class="title-row"><img class="icon" src="/static/icons/layers.svg" alt="layers" /><div class="title">DockPilot Docker CockPit</div></div>
+		<div class="title-row"><img class="icon" src="/static/icons/layers.svg" alt="layers" /><div class="title">DockPilot</div><div class="cockpit-badge">Docker Cockpit</div></div>
         <div class="small">KubePilot-style dashboard for host container operations</div>
       </div>
 			<div class="badge"><img class="icon live" src="/static/icons/activity.svg" alt="live" /> Socket: {{.DockerHost}} | {{.Now}}</div>
