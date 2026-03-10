@@ -24,6 +24,7 @@ type PageData struct {
 	Running    int
 	Stopped    int
 	Images     int
+	Search     string
 	Error      string
 	Success    string
 	Now        string
@@ -125,6 +126,11 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query != "" {
+		containers = filterContainers(containers, query)
+	}
+
 	running := 0
 	stopped := 0
 	for _, c := range containers {
@@ -145,6 +151,7 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		Running:    running,
 		Stopped:    stopped,
 		Images:     countImages(),
+		Search:     query,
 		Now:        time.Now().Format("2006-01-02 15:04:05"),
 		DockerHost: envOrDefault("DOCKER_HOST", "unix:///var/run/docker.sock"),
 		Success:    r.URL.Query().Get("success"),
@@ -264,6 +271,27 @@ func listContainers() ([]ContainerView, error) {
 		})
 	}
 	return items, nil
+}
+
+func filterContainers(items []ContainerView, query string) []ContainerView {
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return items
+	}
+
+	filtered := make([]ContainerView, 0, len(items))
+	for _, c := range items {
+		if strings.Contains(strings.ToLower(c.Name), q) ||
+			strings.Contains(strings.ToLower(c.ID), q) ||
+			strings.Contains(strings.ToLower(c.Image), q) ||
+			strings.Contains(strings.ToLower(c.Status), q) ||
+			strings.Contains(strings.ToLower(c.State), q) ||
+			strings.Contains(strings.ToLower(c.Ports), q) {
+			filtered = append(filtered, c)
+		}
+	}
+
+	return filtered
 }
 
 func countImages() int {
@@ -408,6 +436,8 @@ const indexHTML = `<!doctype html>
     .kpi .value { font-size:22px; font-weight:700; margin-top:6px; }
 	.icon { width:18px; height:18px; display:inline-block; color:var(--accent); }
 	.icon.live { color:var(--success); }
+	.search { display:flex; gap:8px; align-items:center; margin-bottom:14px; }
+	.search input { flex:1; min-width:220px; }
     .panel { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:14px; margin-bottom:14px; }
     .grid { display:grid; grid-template-columns:2fr 3fr; gap:14px; }
     .row { display:flex; gap:8px; flex-wrap:wrap; }
@@ -449,6 +479,12 @@ const indexHTML = `<!doctype html>
 
     {{if .Success}}<div class="msg ok">{{.Success}}</div>{{end}}
     {{if .Error}}<div class="msg err">{{.Error}}</div>{{end}}
+
+		<form class="search" method="get" action="/">
+			<input name="q" value="{{.Search}}" placeholder="Search by name, id, image, status or ports" />
+			<button class="btn-primary" type="submit">Search</button>
+			{{if .Search}}<a class="small" href="/">clear</a>{{end}}
+		</form>
 
     <div class="kpis">
 			<div class="kpi"><div class="label"><img class="icon" src="/static/icons/cpu.svg" alt="cpu" /> Total Containers</div><div class="value">{{.Total}}</div></div>
