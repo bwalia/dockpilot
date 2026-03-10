@@ -757,7 +757,7 @@ const indexHTML = `<!doctype html>
   <div class="wrap">
     <div class="header">
       <div>
-		<div class="title-row"><img class="icon" src="/static/icons/layers.svg" alt="layers" /><div class="title">DockPilot Admin</div></div>
+		<div class="title-row"><img class="icon" src="/static/icons/layers.svg" alt="layers" /><div class="title">DockPilot Docker CockPit</div></div>
         <div class="small">KubePilot-style dashboard for host container operations</div>
       </div>
 			<div class="badge"><img class="icon live" src="/static/icons/activity.svg" alt="live" /> Socket: {{.DockerHost}} | {{.Now}}</div>
