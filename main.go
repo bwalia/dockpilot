@@ -656,7 +656,7 @@ const indexHTML = `<!doctype html>
       color:var(--text);
       font-family:'JetBrains Mono', ui-monospace, monospace;
     }
-    .wrap { max-width:1200px; margin:0 auto; padding:20px; }
+	.wrap { width:100%; max-width:none; margin:0; padding:20px 24px; }
     .header {
       display:flex; justify-content:space-between; align-items:center;
       border:1px solid var(--border); background:var(--surface); border-radius:12px;
@@ -757,6 +757,7 @@ const indexHTML = `<!doctype html>
 		}
     .small { font-size:12px; color:var(--muted); }
     @media (max-width: 980px) {
+			.wrap { padding:14px; }
       .kpis { grid-template-columns:repeat(2,minmax(0,1fr)); }
       .grid { grid-template-columns:1fr; }
     }
