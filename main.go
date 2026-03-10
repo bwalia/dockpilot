@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"io/ioutil"
@@ -25,10 +26,21 @@ type PageData struct {
 	Stopped    int
 	Images     int
 	Search     string
+	CommandInput  string
+	CommandOutput string
+	AIPrompt       string
+	AISuggestion   string
+	AIExplanation  string
+	AIModel        string
 	Error      string
 	Success    string
 	Now        string
 	DockerHost string
+}
+
+type AISuggestion struct {
+	Command     string `json:"command"`
+	Explanation string `json:"explanation"`
 }
 
 type ContainerView struct {
@@ -47,6 +59,8 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
 	mux.HandleFunc("/", app.handleDashboard)
+	mux.HandleFunc("/docker/exec", app.handleDockerCommand)
+	mux.HandleFunc("/ai/interpret", app.handleAIInterpret)
 	mux.HandleFunc("/containers/create", app.handleCreate)
 	mux.HandleFunc("/containers/", app.handleContainerAction)
 
@@ -120,15 +134,116 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	containers, err := listContainers()
+	search := strings.TrimSpace(r.URL.Query().Get("q"))
+	d, err := a.buildDashboardData(search)
 	if err != nil {
 		a.render(w, PageData{Error: err.Error()})
 		return
 	}
 
-	query := strings.TrimSpace(r.URL.Query().Get("q"))
-	if query != "" {
-		containers = filterContainers(containers, query)
+	d.Success = r.URL.Query().Get("success")
+	d.Error = r.URL.Query().Get("error")
+	a.render(w, d)
+}
+
+func (a *App) handleDockerCommand(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+
+	search := strings.TrimSpace(r.FormValue("q"))
+	commandText := strings.TrimSpace(r.FormValue("command"))
+	commandText = strings.TrimPrefix(commandText, "docker")
+	commandText = strings.TrimSpace(commandText)
+
+	d, err := a.buildDashboardData(search)
+	if err != nil {
+		a.render(w, PageData{Error: err.Error()})
+		return
+	}
+	d.CommandInput = commandText
+
+	if commandText == "" {
+		d.Error = "command is required (example: system prune -f)"
+		a.render(w, d)
+		return
+	}
+
+	args := strings.Fields(commandText)
+	out, err := runDocker(args...)
+	if err != nil {
+		d.Error = fmt.Sprintf("docker %s failed: %v", commandText, err)
+		if out != "" {
+			d.CommandOutput = out
+		}
+		a.render(w, d)
+		return
+	}
+
+	d.Success = fmt.Sprintf("docker %s executed", commandText)
+	if out == "" {
+		d.CommandOutput = "(no output)"
+	} else {
+		d.CommandOutput = out
+	}
+	a.render(w, d)
+}
+
+func (a *App) handleAIInterpret(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+
+	search := strings.TrimSpace(r.FormValue("q"))
+	prompt := strings.TrimSpace(r.FormValue("ai_prompt"))
+
+	d, err := a.buildDashboardData(search)
+	if err != nil {
+		a.render(w, PageData{Error: err.Error()})
+		return
+	}
+	d.AIPrompt = prompt
+	d.AIModel = envOrDefault("OLLAMA_MODEL", "llama3")
+
+	if prompt == "" {
+		d.Error = "AI prompt is required"
+		a.render(w, d)
+		return
+	}
+
+	resp, err := interpretDockerCommandWithOllama(prompt)
+	if err != nil {
+		d.Error = fmt.Sprintf("AI interpret failed: %v", err)
+		a.render(w, d)
+		return
+	}
+
+	d.AISuggestion = strings.TrimSpace(resp.Command)
+	d.AIExplanation = strings.TrimSpace(resp.Explanation)
+	d.CommandInput = d.AISuggestion
+	d.Success = "AI suggestion ready. Review and click Run in Docker Command box."
+	a.render(w, d)
+}
+
+func (a *App) buildDashboardData(search string) (PageData, error) {
+
+	containers, err := listContainers()
+	if err != nil {
+		return PageData{}, err
+	}
+
+	if search != "" {
+		containers = filterContainers(containers, search)
 	}
 
 	running := 0
@@ -145,19 +260,139 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return containers[i].Created > containers[j].Created
 	})
 
-	d := PageData{
+	return PageData{
 		Containers: containers,
 		Total:      len(containers),
 		Running:    running,
 		Stopped:    stopped,
 		Images:     countImages(),
-		Search:     query,
+		Search:     search,
+		CommandInput:  "",
+		CommandOutput: "",
+		AIPrompt:      "",
+		AISuggestion:  "",
+		AIExplanation: "",
+		AIModel:       envOrDefault("OLLAMA_MODEL", "llama3"),
 		Now:        time.Now().Format("2006-01-02 15:04:05"),
 		DockerHost: envOrDefault("DOCKER_HOST", "unix:///var/run/docker.sock"),
-		Success:    r.URL.Query().Get("success"),
-		Error:      r.URL.Query().Get("error"),
+	}, nil
+}
+
+func interpretDockerCommandWithOllama(userPrompt string) (AISuggestion, error) {
+	baseURL := strings.TrimRight(envOrDefault("OLLAMA_BASE_URL", "http://localhost:11434/v1"), "/")
+	apiKey := strings.TrimSpace(os.Getenv("OLLAMA_API_KEY"))
+	model := envOrDefault("OLLAMA_MODEL", "llama3")
+
+	systemPrompt := `You are DockPilot AI assistant.
+Return ONLY JSON object with keys:
+- command: docker subcommand WITHOUT the leading word "docker".
+- explanation: short reason.
+
+Rules:
+- Never include dangerous host commands.
+- Keep command focused on Docker CLI only.
+- If task is ambiguous, return a safe read-only command like "ps -a" and explain.`
+
+	reqBody := map[string]interface{}{
+		"model": model,
+		"messages": []map[string]string{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": userPrompt},
+		},
+		"temperature": 0.2,
 	}
-	a.render(w, d)
+
+	b, err := json.Marshal(reqBody)
+	if err != nil {
+		return AISuggestion{}, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/chat/completions", bytes.NewReader(b))
+	if err != nil {
+		return AISuggestion{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	client := &http.Client{Timeout: 45 * time.Second}
+	res, err := client.Do(req)
+	if err != nil {
+		return AISuggestion{}, err
+	}
+	defer res.Body.Close()
+
+	body, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		return AISuggestion{}, err
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return AISuggestion{}, fmt.Errorf("ollama returned %s", res.Status)
+	}
+
+	var chatResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &chatResp); err != nil {
+		return AISuggestion{}, fmt.Errorf("invalid ollama response: %w", err)
+	}
+	if len(chatResp.Choices) == 0 {
+		return AISuggestion{}, fmt.Errorf("empty ollama choices")
+	}
+
+	raw := strings.TrimSpace(chatResp.Choices[0].Message.Content)
+	suggestion, err := parseAISuggestion(raw)
+	if err != nil {
+		return AISuggestion{Command: "ps -a", Explanation: raw}, nil
+	}
+
+	suggestion.Command = strings.TrimSpace(strings.TrimPrefix(suggestion.Command, "docker"))
+	if suggestion.Command == "" {
+		suggestion.Command = "ps -a"
+	}
+	if suggestion.Explanation == "" {
+		suggestion.Explanation = "Generated by local Ollama model."
+	}
+	return suggestion, nil
+}
+
+func parseAISuggestion(raw string) (AISuggestion, error) {
+	var out AISuggestion
+	raw = strings.TrimSpace(raw)
+	if err := json.Unmarshal([]byte(raw), &out); err == nil {
+		return out, nil
+	}
+
+	cleaned := raw
+	if idx := strings.Index(cleaned, "```"); idx >= 0 {
+		cleaned = cleaned[idx+3:]
+		if nl := strings.Index(cleaned, "\n"); nl >= 0 {
+			cleaned = cleaned[nl+1:]
+		}
+		if end := strings.Index(cleaned, "```"); end >= 0 {
+			cleaned = cleaned[:end]
+		}
+		cleaned = strings.TrimSpace(cleaned)
+		if err := json.Unmarshal([]byte(cleaned), &out); err == nil {
+			return out, nil
+		}
+	}
+
+	if start := strings.Index(raw, "{"); start >= 0 {
+		if end := strings.LastIndex(raw, "}"); end > start {
+			fragment := raw[start : end+1]
+			if err := json.Unmarshal([]byte(fragment), &out); err == nil {
+				return out, nil
+			}
+		}
+	}
+
+	return AISuggestion{}, fmt.Errorf("no valid AI JSON found")
 }
 
 func (a *App) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -438,6 +673,14 @@ const indexHTML = `<!doctype html>
 	.icon.live { color:var(--success); }
 	.search { display:flex; gap:8px; align-items:center; margin-bottom:14px; }
 	.search input { flex:1; min-width:220px; }
+	.cmd-run { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:14px; margin-bottom:14px; }
+	.cmd-row { display:flex; gap:8px; align-items:center; }
+	.cmd-prefix { border:1px solid var(--border); background:#0b1324; color:var(--muted); border-radius:8px; padding:10px 12px; font-size:13px; }
+	.cmd-run input { flex:1; min-width:200px; }
+	.cmd-output { margin-top:10px; background:#0b1324; border:1px solid var(--border); border-radius:8px; padding:10px; font-size:12px; white-space:pre-wrap; word-break:break-word; }
+	.ai-run { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:14px; margin-bottom:14px; }
+	.ai-run textarea { width:100%; min-height:72px; resize:vertical; }
+	.ai-meta { margin-top:8px; font-size:12px; color:var(--muted); }
     .panel { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:14px; margin-bottom:14px; }
     .grid { display:grid; grid-template-columns:2fr 3fr; gap:14px; }
     .row { display:flex; gap:8px; flex-wrap:wrap; }
@@ -459,7 +702,50 @@ const indexHTML = `<!doctype html>
     th { color:var(--muted); font-weight:600; }
     .state-running { color:var(--success); font-weight:700; }
     .state-other { color:var(--warning); font-weight:700; }
-    .actions form { display:inline-block; margin:2px; }
+		.actions-col { width:170px; }
+		.actions {
+			display:grid;
+			grid-template-columns:repeat(4, 34px);
+			gap:6px;
+			align-items:center;
+			justify-content:start;
+			min-width:152px;
+		}
+		.actions form { margin:0; }
+		.btn-icon {
+			width:34px;
+			height:34px;
+			padding:0;
+			display:inline-flex;
+			align-items:center;
+			justify-content:center;
+			position:relative;
+		}
+		.btn-icon svg {
+			width:15px;
+			height:15px;
+			fill:none;
+			stroke:currentColor;
+			stroke-width:2;
+			stroke-linecap:round;
+			stroke-linejoin:round;
+			pointer-events:none;
+		}
+		.tip:hover::after {
+			content:attr(data-tip);
+			position:absolute;
+			bottom:calc(100% + 6px);
+			left:50%;
+			transform:translateX(-50%);
+			white-space:nowrap;
+			background:#0b1324;
+			border:1px solid var(--border);
+			color:var(--text);
+			font-size:11px;
+			padding:4px 7px;
+			border-radius:6px;
+			z-index:10;
+		}
     .small { font-size:12px; color:var(--muted); }
     @media (max-width: 980px) {
       .kpis { grid-template-columns:repeat(2,minmax(0,1fr)); }
@@ -485,6 +771,32 @@ const indexHTML = `<!doctype html>
 			<button class="btn-primary" type="submit">Search</button>
 			{{if .Search}}<a class="small" href="/">clear</a>{{end}}
 		</form>
+
+		<div class="ai-run">
+			<h3>AI Command Assistant (Local Ollama)</h3>
+			<form method="post" action="/ai/interpret">
+				<input type="hidden" name="q" value="{{.Search}}" />
+				<textarea name="ai_prompt" placeholder="Example: clean unused images and stopped containers safely">{{.AIPrompt}}</textarea>
+				<div class="row" style="margin-top:8px; align-items:center;">
+					<button class="btn-primary" type="submit">Suggest Docker Command</button>
+					<div class="ai-meta">Model: {{.AIModel}} (set OLLAMA_BASE_URL env if needed)</div>
+				</div>
+			</form>
+			{{if .AISuggestion}}<div class="cmd-output">Suggested: docker {{.AISuggestion}}{{if .AIExplanation}}\n\nWhy: {{.AIExplanation}}{{end}}</div>{{end}}
+		</div>
+
+		<div class="cmd-run">
+			<h3>Run Docker Command</h3>
+			<form method="post" action="/docker/exec">
+				<input type="hidden" name="q" value="{{.Search}}" />
+				<div class="cmd-row">
+					<div class="cmd-prefix">docker</div>
+					<input name="command" value="{{.CommandInput}}" placeholder="system prune -f" />
+					<button class="btn-primary" type="submit">Run</button>
+				</div>
+			</form>
+			{{if .CommandOutput}}<div class="cmd-output">{{.CommandOutput}}</div>{{end}}
+		</div>
 
     <div class="kpis">
 			<div class="kpi"><div class="label"><img class="icon" src="/static/icons/cpu.svg" alt="cpu" /> Total Containers</div><div class="value">{{.Total}}</div></div>
@@ -537,7 +849,7 @@ const indexHTML = `<!doctype html>
             <th>State</th>
             <th>Ports</th>
             <th>Age</th>
-            <th>Actions</th>
+			<th class="actions-col">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -557,10 +869,26 @@ const indexHTML = `<!doctype html>
               <td>{{.Ports}}</td>
               <td>{{.Created}}</td>
               <td class="actions">
-                <form method="post" action="/containers/{{.ID}}/start"><button class="btn-good">Start</button></form>
-                <form method="post" action="/containers/{{.ID}}/stop"><button class="btn-warn">Stop</button></form>
-                <form method="post" action="/containers/{{.ID}}/restart"><button class="btn-primary">Restart</button></form>
-                <form method="post" action="/containers/{{.ID}}/remove" onsubmit="return confirm('Remove container {{.Name}}?')"><button class="btn-danger">Remove</button></form>
+								<form method="post" action="/containers/{{.ID}}/start">
+									<button class="btn-good btn-icon tip" type="submit" data-tip="Start" title="Start" aria-label="Start {{.Name}}">
+										<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+									</button>
+								</form>
+								<form method="post" action="/containers/{{.ID}}/stop">
+									<button class="btn-warn btn-icon tip" type="submit" data-tip="Stop" title="Stop" aria-label="Stop {{.Name}}">
+										<svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
+									</button>
+								</form>
+								<form method="post" action="/containers/{{.ID}}/restart">
+									<button class="btn-primary btn-icon tip" type="submit" data-tip="Restart" title="Restart" aria-label="Restart {{.Name}}">
+										<svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+									</button>
+								</form>
+								<form method="post" action="/containers/{{.ID}}/remove" onsubmit="return confirm('Remove container {{.Name}}?')">
+									<button class="btn-danger btn-icon tip" type="submit" data-tip="Remove" title="Remove" aria-label="Remove {{.Name}}">
+										<svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M7 6l1 14h8l1-14"/></svg>
+									</button>
+								</form>
               </td>
             </tr>
             {{end}}
