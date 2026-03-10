@@ -1,0 +1,11 @@
+# Build outputs
+/dockpilot
+/dockpilot-linux-amd64
+/docker-admin-ui
+
+# Runtime files
+*.log
+*.auth
+
+# OS
+.DS_Store
