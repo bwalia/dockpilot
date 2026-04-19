@@ -67,6 +67,7 @@ type PageData struct {
 	Running       int
 	Stopped       int
 	Images        int
+	Usage         HostUsage
 	Search        string
 	CommandInput  string
 	CommandOutput string
@@ -86,13 +87,34 @@ type AISuggestion struct {
 }
 
 type ContainerView struct {
-	ID      string
-	Name    string
-	Image   string
-	Status  string
-	State   string
-	Created string
-	Ports   string
+	ID       string
+	Name     string
+	Image    string
+	Status   string
+	State    string
+	Created  string
+	Ports    string
+	CPUPerc  string
+	MemUsage string
+	MemPerc  string
+}
+
+type HostUsage struct {
+	CPUPercent    float64
+	CPUCores      int
+	MemUsedBytes  int64
+	MemTotalBytes int64
+	MemPercent    float64
+	DiskUsedBytes int64
+	DiskTotalBytes int64
+	DiskPercent   float64
+	CPUUsedLabel  string
+	CPUTotalLabel string
+	MemUsedLabel  string
+	MemTotalLabel string
+	DiskUsedLabel string
+	DiskTotalLabel string
+	Error         string
 }
 
 type PortMapping struct {
@@ -232,7 +254,7 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	search := strings.TrimSpace(r.URL.Query().Get("q"))
 	d, err := a.buildDashboardData(search)
 	if err != nil {
-		a.render(w, PageData{Error: err.Error()})
+		a.render(w, PageData{Error: err.Error(), Usage: buildHostUsage(nil, nil)})
 		return
 	}
 
@@ -572,6 +594,17 @@ func (a *App) buildDashboardData(search string) (PageData, error) {
 		return PageData{}, err
 	}
 
+	stats := collectContainerStats()
+	for i := range containers {
+		if s, ok := stats[containers[i].ID]; ok {
+			containers[i].CPUPerc = s.cpuPerc
+			containers[i].MemUsage = s.memUsage
+			containers[i].MemPerc = s.memPerc
+		}
+	}
+
+	usage := buildHostUsage(containers, stats)
+
 	if search != "" {
 		containers = filterContainers(containers, search)
 	}
@@ -596,6 +629,7 @@ func (a *App) buildDashboardData(search string) (PageData, error) {
 		Running:       running,
 		Stopped:       stopped,
 		Images:        countImages(),
+		Usage:         usage,
 		Search:        search,
 		CommandInput:  "",
 		CommandOutput: "",
@@ -920,6 +954,216 @@ func countImages() int {
 		return 0
 	}
 	return len(splitLines(out))
+}
+
+type containerStat struct {
+	cpuPerc  string
+	memUsage string
+	memPerc  string
+	memBytes int64
+	cpuFloat float64
+}
+
+func collectContainerStats() map[string]containerStat {
+	out, err := runDocker("stats", "--no-stream", "--format", "{{.ID}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}")
+	if err != nil || strings.TrimSpace(out) == "" {
+		return map[string]containerStat{}
+	}
+
+	stats := make(map[string]containerStat)
+	for _, line := range splitLines(out) {
+		p := strings.Split(line, "|")
+		if len(p) < 4 {
+			continue
+		}
+		id := shortID(strings.TrimSpace(p[0]))
+		cpuStr := strings.TrimSpace(p[1])
+		memUsage := strings.TrimSpace(p[2])
+		memPerc := strings.TrimSpace(p[3])
+
+		cpuFloat := parsePercent(cpuStr)
+		memBytes := parseMemUsageBytes(memUsage)
+		stats[id] = containerStat{
+			cpuPerc:  cpuStr,
+			memUsage: memUsage,
+			memPerc:  memPerc,
+			memBytes: memBytes,
+			cpuFloat: cpuFloat,
+		}
+	}
+	return stats
+}
+
+func parsePercent(s string) float64 {
+	s = strings.TrimSpace(strings.TrimSuffix(s, "%"))
+	if s == "" || s == "--" {
+		return 0
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+func parseMemUsageBytes(s string) int64 {
+	// docker stats prints "used / limit" — take the left side
+	if idx := strings.Index(s, "/"); idx >= 0 {
+		s = s[:idx]
+	}
+	return parseSizeBytes(strings.TrimSpace(s))
+}
+
+var sizeRe = regexp.MustCompile(`(?i)^([0-9.]+)\s*([KMGT]?i?B)?$`)
+
+func parseSizeBytes(s string) int64 {
+	m := sizeRe.FindStringSubmatch(strings.TrimSpace(s))
+	if m == nil {
+		return 0
+	}
+	v, err := strconv.ParseFloat(m[1], 64)
+	if err != nil {
+		return 0
+	}
+	unit := strings.ToUpper(m[2])
+	mult := float64(1)
+	switch unit {
+	case "", "B":
+		mult = 1
+	case "KB":
+		mult = 1e3
+	case "KIB":
+		mult = 1 << 10
+	case "MB":
+		mult = 1e6
+	case "MIB":
+		mult = 1 << 20
+	case "GB":
+		mult = 1e9
+	case "GIB":
+		mult = 1 << 30
+	case "TB":
+		mult = 1e12
+	case "TIB":
+		mult = 1 << 40
+	}
+	return int64(v * mult)
+}
+
+func humanBytes(b int64) string {
+	if b <= 0 {
+		return "0 B"
+	}
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	units := []string{"KiB", "MiB", "GiB", "TiB", "PiB"}
+	return fmt.Sprintf("%.1f %s", float64(b)/float64(div), units[exp])
+}
+
+func dockerInfoTotalMem() int64 {
+	out, err := runDocker("info", "--format", "{{.MemTotal}}")
+	if err != nil {
+		return 0
+	}
+	v, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+func dockerInfoCPUs() int {
+	out, err := runDocker("info", "--format", "{{.NCPU}}")
+	if err != nil {
+		return 0
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+func dockerSystemDFSize() (used, total int64) {
+	out, err := runDocker("system", "df", "--format", "{{.Type}}|{{.Size}}|{{.Reclaimable}}")
+	if err != nil || strings.TrimSpace(out) == "" {
+		return 0, 0
+	}
+	for _, line := range splitLines(out) {
+		p := strings.Split(line, "|")
+		if len(p) < 3 {
+			continue
+		}
+		sz := parseSizeBytes(strings.TrimSpace(p[1]))
+		used += sz
+	}
+	// docker doesn't expose the host disk cap via this command. Use the sum
+	// itself as the upper bound for display purposes; callers can render a
+	// fullness meter by dividing active (non-reclaimable) / total.
+	total = used
+	return used, total
+}
+
+func buildHostUsage(containers []ContainerView, stats map[string]containerStat) HostUsage {
+	var (
+		cpuSum   float64
+		memSum   int64
+	)
+	for _, c := range containers {
+		if s, ok := stats[c.ID]; ok {
+			cpuSum += s.cpuFloat
+			memSum += s.memBytes
+		}
+	}
+
+	cpus := dockerInfoCPUs()
+	memTotal := dockerInfoTotalMem()
+	diskUsed, diskTotal := dockerSystemDFSize()
+
+	cpuPercent := float64(0)
+	if cpus > 0 {
+		cpuPercent = cpuSum / float64(cpus)
+		if cpuPercent > 100 {
+			cpuPercent = 100
+		}
+	}
+
+	memPercent := float64(0)
+	if memTotal > 0 {
+		memPercent = float64(memSum) / float64(memTotal) * 100
+		if memPercent > 100 {
+			memPercent = 100
+		}
+	}
+
+	diskPercent := float64(0)
+	if diskTotal > 0 {
+		diskPercent = float64(diskUsed) / float64(diskTotal) * 100
+	}
+
+	return HostUsage{
+		CPUPercent:     cpuPercent,
+		CPUCores:       cpus,
+		MemUsedBytes:   memSum,
+		MemTotalBytes:  memTotal,
+		MemPercent:     memPercent,
+		DiskUsedBytes:  diskUsed,
+		DiskTotalBytes: diskTotal,
+		DiskPercent:    diskPercent,
+		CPUUsedLabel:   fmt.Sprintf("%.1f%%", cpuSum),
+		CPUTotalLabel:  fmt.Sprintf("%d cores", cpus),
+		MemUsedLabel:   humanBytes(memSum),
+		MemTotalLabel:  humanBytes(memTotal),
+		DiskUsedLabel:  humanBytes(diskUsed),
+		DiskTotalLabel: humanBytes(diskTotal),
+	}
 }
 
 func runDocker(args ...string) (string, error) {
@@ -1333,6 +1577,28 @@ const indexHTML = `<!doctype html>
     .kpi { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:12px; }
 	.kpi .label { color:var(--muted); font-size:12px; display:flex; align-items:center; gap:6px; }
     .kpi .value { font-size:22px; font-weight:700; margin-top:6px; }
+    .usage-row { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-bottom:14px; }
+    .usage-card { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px; display:flex; gap:14px; align-items:center; }
+    .usage-donut { position:relative; width:84px; height:84px; flex-shrink:0; }
+    .usage-donut svg { transform:rotate(-90deg); width:100%; height:100%; }
+    .usage-donut .track { fill:none; stroke:var(--border); stroke-width:10; }
+    .usage-donut .arc { fill:none; stroke-width:10; stroke-linecap:round; transition: stroke-dashoffset .4s ease; }
+    .usage-donut .arc-cpu { stroke:var(--accent); }
+    .usage-donut .arc-mem { stroke:var(--success); }
+    .usage-donut .arc-disk { stroke:var(--warning); }
+    .usage-donut .pct { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700; color:var(--text); }
+    .usage-meta { display:flex; flex-direction:column; gap:3px; min-width:0; }
+    .usage-meta .title { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+    .usage-meta .used { font-size:18px; font-weight:700; }
+    .usage-meta .total { font-size:11px; color:var(--muted); }
+    .usage-bar { margin-top:6px; height:6px; background:var(--border); border-radius:999px; overflow:hidden; }
+    .usage-bar > span { display:block; height:100%; border-radius:999px; }
+    .usage-bar .fill-cpu { background:var(--accent); }
+    .usage-bar .fill-mem { background:var(--success); }
+    .usage-bar .fill-disk { background:var(--warning); }
+    .metric-cell { font-variant-numeric:tabular-nums; }
+    .metric-bar { margin-top:4px; height:4px; background:var(--border); border-radius:999px; overflow:hidden; width:72px; }
+    .metric-bar > span { display:block; height:100%; }
 	.icon { width:18px; height:18px; display:inline-block; color:var(--accent); }
 	.icon.live { color:var(--success); }
 	.search { display:flex; gap:8px; align-items:center; margin-bottom:14px; }
@@ -1414,6 +1680,7 @@ const indexHTML = `<!doctype html>
     @media (max-width: 980px) {
 			.wrap { padding:14px; }
       .kpis { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .usage-row { grid-template-columns:1fr; }
       .grid { grid-template-columns:1fr; }
     }
   </style>
@@ -1462,6 +1729,58 @@ const indexHTML = `<!doctype html>
 			</form>
 			{{if .CommandOutput}}<div class="cmd-output">{{.CommandOutput}}</div>{{end}}
 		</div>
+
+    <div class="usage-row">
+      {{with .Usage}}
+      <div class="usage-card">
+        <div class="usage-donut">
+          <svg viewBox="0 0 36 36">
+            <circle class="track" cx="18" cy="18" r="15.9155"/>
+            <circle class="arc arc-cpu" cx="18" cy="18" r="15.9155" stroke-dasharray="{{printf "%.2f" .CPUPercent}} 100" stroke-dashoffset="0"/>
+          </svg>
+          <div class="pct">{{printf "%.0f" .CPUPercent}}%</div>
+        </div>
+        <div class="usage-meta">
+          <div class="title">CPU</div>
+          <div class="used">{{.CPUUsedLabel}}</div>
+          <div class="total">of {{.CPUTotalLabel}}</div>
+          <div class="usage-bar"><span class="fill-cpu" style="width:{{printf "%.2f" .CPUPercent}}%"></span></div>
+        </div>
+      </div>
+
+      <div class="usage-card">
+        <div class="usage-donut">
+          <svg viewBox="0 0 36 36">
+            <circle class="track" cx="18" cy="18" r="15.9155"/>
+            <circle class="arc arc-mem" cx="18" cy="18" r="15.9155" stroke-dasharray="{{printf "%.2f" .MemPercent}} 100" stroke-dashoffset="0"/>
+          </svg>
+          <div class="pct">{{printf "%.0f" .MemPercent}}%</div>
+        </div>
+        <div class="usage-meta">
+          <div class="title">Memory</div>
+          <div class="used">{{.MemUsedLabel}}</div>
+          <div class="total">of {{.MemTotalLabel}}</div>
+          <div class="usage-bar"><span class="fill-mem" style="width:{{printf "%.2f" .MemPercent}}%"></span></div>
+        </div>
+      </div>
+
+      <div class="usage-card">
+        <div class="usage-donut">
+          <svg viewBox="0 0 36 36">
+            <circle class="track" cx="18" cy="18" r="15.9155"/>
+            <circle class="arc arc-disk" cx="18" cy="18" r="15.9155" stroke-dasharray="{{printf "%.2f" .DiskPercent}} 100" stroke-dashoffset="0"/>
+          </svg>
+          <div class="pct">{{printf "%.0f" .DiskPercent}}%</div>
+        </div>
+        <div class="usage-meta">
+          <div class="title">Storage (Docker)</div>
+          <div class="used">{{.DiskUsedLabel}}</div>
+          <div class="total">images + containers + volumes</div>
+          <div class="usage-bar"><span class="fill-disk" style="width:{{printf "%.2f" .DiskPercent}}%"></span></div>
+        </div>
+      </div>
+      {{end}}
+    </div>
 
     <div class="kpis">
 			<div class="kpi"><div class="label"><img class="icon" src="/static/icons/cpu.svg" alt="cpu" /> Total Containers</div><div class="value">{{.Total}}</div></div>
@@ -1524,6 +1843,8 @@ const indexHTML = `<!doctype html>
             <th>Image</th>
             <th>State</th>
             <th>Ports</th>
+            <th>CPU</th>
+            <th>Memory</th>
             <th>Age</th>
 			<th class="actions-col">Actions</th>
           </tr>
@@ -1543,6 +1864,21 @@ const indexHTML = `<!doctype html>
                 <div class="small">{{.Status}}</div>
               </td>
               <td>{{.Ports}}</td>
+              <td class="metric-cell">
+                {{if .CPUPerc}}
+                  {{.CPUPerc}}
+                {{else}}
+                  <span class="small">—</span>
+                {{end}}
+              </td>
+              <td class="metric-cell">
+                {{if .MemUsage}}
+                  {{.MemUsage}}
+                  <div class="small">{{.MemPerc}}</div>
+                {{else}}
+                  <span class="small">—</span>
+                {{end}}
+              </td>
               <td>{{.Created}}</td>
               <td class="actions">
 								<form method="post" action="/containers/{{.ID}}/start">
@@ -1585,7 +1921,7 @@ const indexHTML = `<!doctype html>
             </tr>
             {{end}}
           {{else}}
-            <tr><td colspan="6" class="small">No containers found.</td></tr>
+            <tr><td colspan="8" class="small">No containers found.</td></tr>
           {{end}}
         </tbody>
       </table>
