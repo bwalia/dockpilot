@@ -1532,401 +1532,544 @@ const indexHTML = `<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-	<title>DockPilot</title>
+  <title>DockPilot — Docker Cockpit</title>
+  <meta name="theme-color" content="#0a0f1c" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg:#0a0e1a;
+      --bg:#0a0f1c;
       --surface:#111827;
-      --border:#1f2937;
+      --surface-2:#1f2937;
+      --surface-3:#283548;
+      --border:rgba(255,255,255,0.08);
+      --border-hover:rgba(255,255,255,0.16);
+      --text:#f1f5f9;
+      --text-secondary:#cbd5e1;
+      --muted:#94a3b8;
       --accent:#3b82f6;
-      --success:#10b981;
-      --warning:#f59e0b;
+      --accent-light:#60a5fa;
+      --accent-glow:rgba(59,130,246,0.15);
+      --success:#22c55e;
+      --success-bg:rgba(34,197,94,0.1);
+      --success-border:rgba(34,197,94,0.25);
+      --warning:#fbbf24;
+      --warning-bg:rgba(251,191,36,0.1);
       --danger:#ef4444;
-      --muted:#6b7280;
-      --text:#e5e7eb;
+      --danger-bg:rgba(239,68,68,0.1);
+      --radius:16px;
+      --radius-sm:10px;
+      --mono:'JetBrains Mono', ui-monospace, "SF Mono", Menlo, monospace;
     }
-    * { box-sizing:border-box; }
+    *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+    html { scroll-behavior:smooth; }
     body {
-      margin:0;
-      background: radial-gradient(1200px 600px at 90% -100px, #1d4ed833 0%, transparent 60%), var(--bg);
+      font-family:'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       color:var(--text);
-      font-family:'JetBrains Mono', ui-monospace, monospace;
+      background:radial-gradient(1100px 500px at 88% -120px, var(--accent-glow) 0%, transparent 60%), var(--bg);
+      line-height:1.6;
+      -webkit-font-smoothing:antialiased;
+      min-height:100vh;
     }
-	.wrap { width:100%; max-width:none; margin:0; padding:20px 24px; }
-    .header {
-      display:flex; justify-content:space-between; align-items:center;
-      border:1px solid var(--border); background:var(--surface); border-radius:12px;
-      padding:14px 16px; margin-bottom:14px;
+    a { color:inherit; text-decoration:none; }
+    .wrap { width:100%; max-width:1560px; margin:0 auto; padding:0 28px; }
+
+    /* ── Nav ── */
+    .nav {
+      position:sticky; top:0; z-index:50;
+      background:rgba(10,15,28,0.85);
+      backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
+      border-bottom:1px solid var(--border);
     }
-		.title { font-size:22px; font-weight:700; letter-spacing:.4px; line-height:1.1; }
-	.title-row { display:flex; align-items:center; gap:10px; }
-		.cockpit-badge {
-			font-size:11px;
-			color:var(--muted);
-			background:var(--surface);
-			border:1px solid var(--border);
-			border-radius:6px;
-			padding:2px 8px;
-			line-height:1.2;
-		}
-    .badge { color:var(--muted); border:1px solid var(--border); border-radius:999px; padding:3px 10px; font-size:12px; }
-    .kpis { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-bottom:14px; }
-    .kpi { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:12px; }
-	.kpi .label { color:var(--muted); font-size:12px; display:flex; align-items:center; gap:6px; }
-    .kpi .value { font-size:22px; font-weight:700; margin-top:6px; }
-    .usage-row { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-bottom:14px; }
-    .usage-card { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px; display:flex; gap:14px; align-items:center; }
-    .usage-donut { position:relative; width:84px; height:84px; flex-shrink:0; }
+    .nav-inner { display:flex; align-items:center; gap:20px; height:64px; }
+    .brand { display:flex; align-items:center; gap:11px; }
+    .brand .logo-badge {
+      width:34px; height:34px; border-radius:9px;
+      background:linear-gradient(135deg, var(--accent) 0%, #6366f1 100%);
+      display:flex; align-items:center; justify-content:center;
+      box-shadow:0 4px 18px var(--accent-glow);
+    }
+    .brand .logo-badge svg { width:19px; height:19px; stroke:#fff; fill:none; stroke-width:2; }
+    .brand .name { font-weight:900; font-size:1.2rem; letter-spacing:-0.02em; }
+    .brand .name span { color:var(--accent-light); }
+    .brand .tag {
+      font-size:11px; color:var(--muted); border:1px solid var(--border);
+      border-radius:6px; padding:2px 8px; font-weight:600; white-space:nowrap;
+    }
+    .nav-links { display:flex; align-items:center; gap:4px; }
+    .nav-links a {
+      font-size:0.92rem; font-weight:600; color:var(--muted);
+      padding:8px 14px; border-radius:var(--radius-sm); transition:all .15s;
+      display:inline-flex; align-items:center; gap:7px;
+    }
+    .nav-links a:hover { color:var(--text); background:rgba(255,255,255,0.06); }
+    .nav-links a.active { color:var(--text); background:var(--accent-glow); }
+    .nav-links a svg { width:16px; height:16px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+    .nav-spacer { flex:1; }
+    .socket-badge {
+      display:inline-flex; align-items:center; gap:8px;
+      font-size:0.8rem; color:var(--text-secondary); font-weight:500;
+      background:var(--success-bg); border:1px solid var(--success-border);
+      padding:7px 14px; border-radius:999px; white-space:nowrap;
+    }
+    .socket-badge .dot { width:8px; height:8px; border-radius:50%; background:var(--success); box-shadow:0 0 0 3px rgba(34,197,94,0.18); animation:pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.4;} }
+    .socket-badge .mono { font-family:var(--mono); color:var(--muted); font-size:0.74rem; }
+
+    /* ── Page ── */
+    main { padding:28px 0 64px; }
+    .page-head { margin-bottom:22px; }
+    .page-head h1 { font-size:1.5rem; font-weight:800; letter-spacing:-0.02em; }
+    .page-head p { color:var(--muted); font-size:0.95rem; margin-top:3px; }
+
+    .msg { padding:13px 16px; border-radius:var(--radius-sm); margin-bottom:18px; font-size:0.9rem; display:flex; align-items:center; gap:10px; }
+    .msg::before { font-size:1rem; }
+    .ok { background:var(--success-bg); border:1px solid var(--success-border); color:#86efac; }
+    .ok::before { content:'✓'; }
+    .err { background:var(--danger-bg); border:1px solid rgba(239,68,68,0.3); color:#fca5a5; }
+    .err::before { content:'!'; font-weight:900; }
+
+    /* ── Section ── */
+    .section { margin-bottom:26px; }
+    .section-title {
+      display:flex; align-items:center; gap:10px; margin-bottom:14px;
+      font-size:0.78rem; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted);
+    }
+    .section-title svg { width:15px; height:15px; stroke:var(--accent-light); fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+
+    /* ── Overview grid ── */
+    .overview { display:grid; grid-template-columns:repeat(4, 1fr); gap:14px; margin-bottom:14px; }
+    .kpi {
+      background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+      padding:18px 20px; transition:border-color .2s, transform .2s; position:relative; overflow:hidden;
+    }
+    .kpi:hover { border-color:var(--border-hover); transform:translateY(-2px); }
+    .kpi .label { color:var(--muted); font-size:0.82rem; font-weight:600; display:flex; align-items:center; gap:8px; }
+    .kpi .label svg { width:16px; height:16px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+    .kpi .value { font-size:2rem; font-weight:800; margin-top:8px; letter-spacing:-0.02em; }
+    .kpi.accent .label svg { stroke:var(--accent-light); }
+    .kpi.green .label svg { stroke:var(--success); }
+    .kpi.green .value { color:var(--success); }
+    .kpi.warn .label svg { stroke:var(--warning); }
+
+    .usage-row { display:grid; grid-template-columns:repeat(3, 1fr); gap:14px; }
+    .usage-card {
+      background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+      padding:18px 20px; display:flex; gap:18px; align-items:center; transition:border-color .2s;
+    }
+    .usage-card:hover { border-color:var(--border-hover); }
+    .usage-donut { position:relative; width:80px; height:80px; flex-shrink:0; }
     .usage-donut svg { transform:rotate(-90deg); width:100%; height:100%; }
-    .usage-donut .track { fill:none; stroke:var(--border); stroke-width:10; }
-    .usage-donut .arc { fill:none; stroke-width:10; stroke-linecap:round; transition: stroke-dashoffset .4s ease; }
+    .usage-donut .track { fill:none; stroke:var(--surface-2); stroke-width:3.2; }
+    .usage-donut .arc { fill:none; stroke-width:3.2; stroke-linecap:round; transition:stroke-dasharray .5s ease; }
     .usage-donut .arc-cpu { stroke:var(--accent); }
     .usage-donut .arc-mem { stroke:var(--success); }
     .usage-donut .arc-disk { stroke:var(--warning); }
-    .usage-donut .pct { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700; color:var(--text); }
-    .usage-meta { display:flex; flex-direction:column; gap:3px; min-width:0; }
-    .usage-meta .title { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
-    .usage-meta .used { font-size:18px; font-weight:700; }
-    .usage-meta .total { font-size:11px; color:var(--muted); }
-    .usage-bar { margin-top:6px; height:6px; background:var(--border); border-radius:999px; overflow:hidden; }
-    .usage-bar > span { display:block; height:100%; border-radius:999px; }
-    .usage-bar .fill-cpu { background:var(--accent); }
-    .usage-bar .fill-mem { background:var(--success); }
-    .usage-bar .fill-disk { background:var(--warning); }
-    .metric-cell { font-variant-numeric:tabular-nums; }
-    .metric-bar { margin-top:4px; height:4px; background:var(--border); border-radius:999px; overflow:hidden; width:72px; }
-    .metric-bar > span { display:block; height:100%; }
-	.icon { width:18px; height:18px; display:inline-block; color:var(--accent); }
-	.icon.live { color:var(--success); }
-	.search { display:flex; gap:8px; align-items:center; margin-bottom:14px; }
-	.search input { flex:1; min-width:220px; }
-	.cmd-run { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:14px; margin-bottom:14px; }
-	.cmd-row { display:flex; gap:8px; align-items:center; }
-	.cmd-prefix { border:1px solid var(--border); background:#0b1324; color:var(--muted); border-radius:8px; padding:10px 12px; font-size:13px; }
-	.cmd-run input { flex:1; min-width:200px; }
-	.cmd-output { margin-top:10px; background:#0b1324; border:1px solid var(--border); border-radius:8px; padding:10px; font-size:12px; white-space:pre-wrap; word-break:break-word; }
-	.ai-run { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:14px; margin-bottom:14px; }
-	.ai-run textarea { width:100%; min-height:72px; resize:vertical; }
-	.ai-meta { margin-top:8px; font-size:12px; color:var(--muted); }
-    .panel { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:14px; margin-bottom:14px; }
-    .grid { display:grid; grid-template-columns:2fr 3fr; gap:14px; }
-    .row { display:flex; gap:8px; flex-wrap:wrap; }
-    input, button {
-      font-family:inherit; border-radius:8px; border:1px solid var(--border);
-      background:#0f172a; color:var(--text); padding:10px 11px;
+    .usage-donut .pct { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:1.05rem; font-weight:800; }
+    .usage-meta { display:flex; flex-direction:column; gap:2px; min-width:0; }
+    .usage-meta .title { font-size:0.72rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.06em; font-weight:700; }
+    .usage-meta .used { font-size:1.25rem; font-weight:800; letter-spacing:-0.01em; }
+    .usage-meta .total { font-size:0.75rem; color:var(--muted); }
+
+    /* ── Card / panel ── */
+    .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); }
+    .card-head {
+      display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+      padding:18px 20px; border-bottom:1px solid var(--border);
     }
-    input { min-width:140px; }
-    button { cursor:pointer; }
-    .btn-primary { background:var(--accent); border-color:var(--accent); color:white; font-weight:600; }
-    .btn-good { background:var(--success); border-color:var(--success); color:#07140f; font-weight:700; }
-    .btn-warn { background:var(--warning); border-color:var(--warning); color:#1a1200; font-weight:700; }
-    .btn-danger { background:var(--danger); border-color:var(--danger); color:#fff; font-weight:700; }
-    .msg { padding:10px; border-radius:8px; margin:0 0 10px 0; font-size:13px; }
-    .ok { background:#022c22; border:1px solid #065f46; }
-    .err { background:#3f0d15; border:1px solid #7f1d1d; }
-    table { width:100%; border-collapse:collapse; font-size:13px; }
-    th, td { padding:10px 8px; border-bottom:1px solid var(--border); text-align:left; vertical-align:top; }
-    th { color:var(--muted); font-weight:600; }
-    .state-running { color:var(--success); font-weight:700; }
-    .state-other { color:var(--warning); font-weight:700; }
-		.actions-col { width:255px; }
-		.actions {
-			display:grid;
-			grid-template-columns:repeat(6, 34px);
-			gap:6px;
-			align-items:center;
-			justify-content:start;
-			min-width:232px;
-		}
-		.actions form { margin:0; }
-		.btn-icon {
-			width:34px;
-			height:34px;
-			padding:0;
-			display:inline-flex;
-			align-items:center;
-			justify-content:center;
-			position:relative;
-		}
-		.btn-icon svg {
-			width:15px;
-			height:15px;
-			fill:none;
-			stroke:currentColor;
-			stroke-width:2;
-			stroke-linecap:round;
-			stroke-linejoin:round;
-			pointer-events:none;
-		}
-		.tip:hover::after {
-			content:attr(data-tip);
-			position:absolute;
-			bottom:calc(100% + 6px);
-			left:50%;
-			transform:translateX(-50%);
-			white-space:nowrap;
-			background:#0b1324;
-			border:1px solid var(--border);
-			color:var(--text);
-			font-size:11px;
-			padding:4px 7px;
-			border-radius:6px;
-			z-index:10;
-		}
-    .small { font-size:12px; color:var(--muted); }
-    @media (max-width: 980px) {
-			.wrap { padding:14px; }
-      .kpis { grid-template-columns:repeat(2,minmax(0,1fr)); }
-      .usage-row { grid-template-columns:1fr; }
-      .grid { grid-template-columns:1fr; }
+    .card-head h3 { font-size:1.05rem; font-weight:700; display:flex; align-items:center; gap:9px; }
+    .card-head h3 svg { width:18px; height:18px; stroke:var(--accent-light); fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+    .count-pill { font-size:0.78rem; font-weight:700; color:var(--accent-light); background:var(--accent-glow); border-radius:999px; padding:3px 11px; }
+    .card-body { padding:20px; }
+
+    /* ── Search ── */
+    .search-wrap { position:relative; margin-left:auto; min-width:260px; flex:1; max-width:440px; }
+    .search-wrap svg { position:absolute; left:14px; top:50%; transform:translateY(-50%); width:17px; height:17px; stroke:var(--muted); fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; pointer-events:none; }
+    .search-wrap input {
+      width:100%; padding:11px 14px 11px 42px; border-radius:var(--radius-sm);
+      border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:0.9rem; font-family:inherit;
+      transition:border-color .15s, box-shadow .15s;
+    }
+    .search-wrap input:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-glow); }
+    .filter-hint { font-size:0.74rem; color:var(--muted); white-space:nowrap; }
+
+    /* ── Inputs / buttons ── */
+    input, textarea, button { font-family:inherit; font-size:0.9rem; }
+    .fld {
+      border-radius:var(--radius-sm); border:1px solid var(--border);
+      background:var(--bg); color:var(--text); padding:11px 13px; transition:border-color .15s, box-shadow .15s;
+    }
+    .fld:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-glow); }
+    textarea.fld { width:100%; min-height:74px; resize:vertical; }
+    .btn {
+      display:inline-flex; align-items:center; justify-content:center; gap:7px;
+      font-weight:600; padding:11px 18px; border-radius:var(--radius-sm);
+      border:1px solid var(--border); color:var(--text); background:var(--surface-2);
+      cursor:pointer; transition:all .15s; white-space:nowrap;
+    }
+    .btn:hover { border-color:var(--border-hover); background:var(--surface-3); }
+    .btn-primary { background:var(--accent); border-color:var(--accent); color:#fff; box-shadow:0 4px 18px var(--accent-glow); }
+    .btn-primary:hover { background:#2563eb; border-color:#2563eb; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; }
+
+    /* ── Tabs (tools) ── */
+    .tabs { display:flex; gap:6px; padding:14px 20px 0; flex-wrap:wrap; }
+    .tab {
+      font-size:0.88rem; font-weight:600; padding:9px 16px; border-radius:var(--radius-sm) var(--radius-sm) 0 0;
+      background:transparent; border:1px solid transparent; border-bottom:none; color:var(--muted); cursor:pointer; transition:all .15s;
+      display:inline-flex; align-items:center; gap:8px;
+    }
+    .tab svg { width:15px; height:15px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+    .tab:hover { color:var(--text); }
+    .tab.active { color:var(--text); background:var(--bg); border-color:var(--border); }
+    .tool-panes { border-top:1px solid var(--border); padding:20px; }
+    .tool-pane { display:none; }
+    .tool-pane.active { display:block; }
+    .cmd-prefix { display:inline-flex; align-items:center; font-family:var(--mono); border:1px solid var(--border); background:var(--bg); color:var(--muted); border-radius:var(--radius-sm); padding:0 13px; font-size:0.85rem; }
+    .cmd-output { margin-top:12px; background:var(--bg); border:1px solid var(--border); border-radius:var(--radius-sm); padding:13px; font-family:var(--mono); font-size:0.78rem; white-space:pre-wrap; word-break:break-word; color:var(--text-secondary); }
+    .tool-meta { font-size:0.78rem; color:var(--muted); display:flex; align-items:center; }
+    /* ── Output viewer (inspect / logs / command) ── */
+    #output-panel { scroll-margin-top:84px; }
+    .output-card { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent-glow), 0 10px 40px rgba(0,0,0,0.35); animation:flashIn .9s ease; }
+    @keyframes flashIn { 0% { box-shadow:0 0 0 3px var(--accent-glow), 0 10px 40px rgba(0,0,0,0.35); } 100% { box-shadow:0 0 0 1px var(--accent-glow), 0 10px 40px rgba(0,0,0,0.35); } }
+    .mono-pill { font-family:var(--mono); font-size:0.74rem; font-weight:600; color:var(--accent-light); background:var(--accent-glow); border-radius:7px; padding:4px 10px; }
+    .output-pre { margin:0; padding:18px 20px; font-family:var(--mono); font-size:0.78rem; line-height:1.6; color:var(--text-secondary); white-space:pre; overflow:auto; max-height:60vh; }
+    .output-pre::-webkit-scrollbar { width:10px; height:10px; }
+    .output-pre::-webkit-scrollbar-thumb { background:var(--surface-3); border-radius:6px; }
+    .tool-hint { font-size:0.82rem; color:var(--muted); line-height:1.7; margin-top:10px; }
+    .tool-hint code { font-family:var(--mono); background:var(--bg); padding:1px 6px; border-radius:5px; border:1px solid var(--border); font-size:0.76rem; color:var(--accent-light); }
+
+    /* ── Table ── */
+    .table-scroll { overflow-x:auto; }
+    table { width:100%; border-collapse:collapse; font-size:0.88rem; }
+    thead th {
+      position:sticky; top:64px;
+      padding:11px 14px; text-align:left; color:var(--muted); font-weight:700;
+      font-size:0.72rem; text-transform:uppercase; letter-spacing:0.05em;
+      background:var(--surface); border-bottom:1px solid var(--border); white-space:nowrap;
+    }
+    tbody td { padding:13px 14px; border-bottom:1px solid var(--border); vertical-align:middle; }
+    tbody tr { transition:background .12s; }
+    tbody tr:hover { background:rgba(255,255,255,0.025); }
+    tbody tr:last-child td { border-bottom:none; }
+    .c-name { font-weight:700; font-size:0.92rem; }
+    .c-id { font-family:var(--mono); font-size:0.72rem; color:var(--muted); margin-top:2px; }
+    .c-image { font-family:var(--mono); font-size:0.8rem; color:var(--text-secondary); word-break:break-all; }
+    .c-sub { font-size:0.74rem; color:var(--muted); margin-top:2px; }
+    .pill {
+      display:inline-flex; align-items:center; gap:6px; font-size:0.74rem; font-weight:700;
+      padding:4px 10px; border-radius:999px; text-transform:capitalize;
+    }
+    .pill::before { content:''; width:7px; height:7px; border-radius:50%; }
+    .pill-running { color:#86efac; background:var(--success-bg); border:1px solid var(--success-border); }
+    .pill-running::before { background:var(--success); }
+    .pill-other { color:#fcd34d; background:var(--warning-bg); border:1px solid rgba(251,191,36,0.25); }
+    .pill-other::before { background:var(--warning); }
+    .metric { font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:0.82rem; }
+    .c-ports { font-family:var(--mono); font-size:0.78rem; color:var(--text-secondary); }
+
+    .actions { display:flex; gap:6px; align-items:center; }
+    .actions form { margin:0; }
+    .btn-icon {
+      width:34px; height:34px; padding:0; border-radius:9px; border:1px solid var(--border);
+      background:var(--surface-2); color:var(--text-secondary);
+      display:inline-flex; align-items:center; justify-content:center; cursor:pointer; position:relative; transition:all .15s;
+    }
+    .btn-icon svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; pointer-events:none; }
+    .btn-icon:hover { transform:translateY(-1px); border-color:var(--border-hover); }
+    .ic-start:hover { color:var(--success); border-color:var(--success-border); background:var(--success-bg); }
+    .ic-stop:hover, .ic-restart:hover { color:var(--warning); border-color:rgba(251,191,36,0.3); background:var(--warning-bg); }
+    .ic-info:hover, .ic-logs:hover { color:var(--accent-light); border-color:var(--accent); background:var(--accent-glow); }
+    .ic-remove:hover { color:var(--danger); border-color:rgba(239,68,68,0.3); background:var(--danger-bg); }
+    .tip:hover::after {
+      content:attr(data-tip); position:absolute; bottom:calc(100% + 7px); left:50%; transform:translateX(-50%);
+      white-space:nowrap; background:#0b1324; border:1px solid var(--border-hover); color:var(--text);
+      font-size:0.72rem; padding:5px 9px; border-radius:7px; z-index:20; font-weight:600;
+    }
+    .empty-row td { text-align:center; padding:48px; color:var(--muted); }
+
+    /* ── Quick links ── */
+    .quick-links { display:flex; gap:12px; flex-wrap:wrap; margin-top:14px; }
+    .quick-link {
+      display:flex; align-items:center; gap:13px; flex:1; min-width:240px;
+      background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+      padding:16px 18px; transition:border-color .2s, transform .2s;
+    }
+    .quick-link:hover { border-color:var(--border-hover); transform:translateY(-2px); }
+    .quick-link .ql-icon { width:42px; height:42px; border-radius:11px; background:var(--accent-glow); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+    .quick-link .ql-icon svg { width:20px; height:20px; stroke:var(--accent-light); fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+    .quick-link .ql-title { font-weight:700; font-size:0.95rem; }
+    .quick-link .ql-desc { font-size:0.8rem; color:var(--muted); margin-top:1px; }
+
+    .small { font-size:0.8rem; color:var(--muted); }
+
+    @media (max-width:1100px) { .overview { grid-template-columns:repeat(2,1fr); } .usage-row { grid-template-columns:1fr; } }
+    @media (max-width:760px) {
+      .wrap { padding:0 16px; }
+      .nav-links a span { display:none; }
+      .brand .tag { display:none; }
+      .overview { grid-template-columns:1fr 1fr; }
+      .search-wrap { max-width:none; min-width:0; }
+      thead th { position:static; }
     }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="header">
-      <div>
-		<div class="title-row"><img class="icon" src="/static/icons/layers.svg" alt="layers" /><div class="title">DockPilot</div><div class="cockpit-badge">Docker Cockpit</div></div>
-        <div class="small">KubePilot-style dashboard for host container operations</div>
+  <header class="nav">
+    <div class="wrap nav-inner">
+      <div class="brand">
+        <span class="logo-badge"><svg viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 12l9 4 9-4"/><path d="M3 17l9 4 9-4"/></svg></span>
+        <span class="name">Dock<span>Pilot</span></span>
+        <span class="tag">Docker Cockpit</span>
       </div>
-			<div class="badge"><img class="icon live" src="/static/icons/activity.svg" alt="live" /> Socket: {{.DockerHost}} | {{.Now}}</div>
+      <nav class="nav-links">
+        <a href="/" class="active"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg><span>Dashboard</span></a>
+        <a href="/ipam"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span>IPAM</span></a>
+        <a href="/runbooks"><svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg><span>Runbooks</span></a>
+        <a href="/landing"><svg viewBox="0 0 24 24"><path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 0 0 1 1h3m10-11l2 2m-2-2v10a1 1 0 0 1-1 1h-3"/></svg><span>About</span></a>
+      </nav>
+      <div class="nav-spacer"></div>
+      <div class="socket-badge"><span class="dot"></span> Socket <span class="mono">{{.DockerHost}}</span></div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="page-head">
+      <h1>Container Dashboard</h1>
+      <p>Live host container operations &middot; {{.Now}}</p>
     </div>
 
     {{if .Success}}<div class="msg ok">{{.Success}}</div>{{end}}
     {{if .Error}}<div class="msg err">{{.Error}}</div>{{end}}
 
-		<form class="search" method="get" action="/">
-			<input name="q" value="{{.Search}}" placeholder="Search by name, id, image, status or ports" />
-			<button class="btn-primary" type="submit">Search</button>
-			{{if .Search}}<a class="small" href="/">clear</a>{{end}}
-		</form>
-
-		<div class="ai-run">
-			<h3>AI Command Assistant (Local Ollama)</h3>
-			<form method="post" action="/ai/interpret">
-				<input type="hidden" name="q" value="{{.Search}}" />
-				<textarea name="ai_prompt" placeholder="Example: clean unused images and stopped containers safely">{{.AIPrompt}}</textarea>
-				<div class="row" style="margin-top:8px; align-items:center;">
-					<button class="btn-primary" type="submit">Suggest Docker Command</button>
-					<div class="ai-meta">Model: {{.AIModel}} (set OLLAMA_BASE_URL env if needed)</div>
-				</div>
-			</form>
-			{{if .AISuggestion}}<div class="cmd-output">Suggested: docker {{.AISuggestion}}{{if .AIExplanation}}\n\nWhy: {{.AIExplanation}}{{end}}</div>{{end}}
-		</div>
-
-		<div class="cmd-run">
-			<h3>Run Docker Command</h3>
-			<form method="post" action="/docker/exec">
-				<input type="hidden" name="q" value="{{.Search}}" />
-				<div class="cmd-row">
-					<div class="cmd-prefix">docker</div>
-					<input name="command" value="{{.CommandInput}}" placeholder="system prune -f" />
-					<button class="btn-primary" type="submit">Run</button>
-				</div>
-			</form>
-			{{if .CommandOutput}}<div class="cmd-output">{{.CommandOutput}}</div>{{end}}
-		</div>
-
-    <div class="usage-row">
-      {{with .Usage}}
-      <div class="usage-card">
-        <div class="usage-donut">
-          <svg viewBox="0 0 36 36">
-            <circle class="track" cx="18" cy="18" r="15.9155"/>
-            <circle class="arc arc-cpu" cx="18" cy="18" r="15.9155" stroke-dasharray="{{printf "%.2f" .CPUPercent}} 100" stroke-dashoffset="0"/>
-          </svg>
-          <div class="pct">{{printf "%.0f" .CPUPercent}}%</div>
+    {{if .CommandOutput}}
+    <!-- Output viewer (inspect / logs / command result) -->
+    <section class="section" id="output-panel">
+      <div class="card output-card">
+        <div class="card-head">
+          <h3><svg viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg> Output</h3>
+          {{if .CommandInput}}<span class="mono-pill">docker {{.CommandInput}}</span>{{end}}
+          <a class="btn" href="/{{if .Search}}?q={{.Search}}{{end}}" style="margin-left:auto;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg> Close</a>
         </div>
-        <div class="usage-meta">
-          <div class="title">CPU</div>
-          <div class="used">{{.CPUUsedLabel}}</div>
-          <div class="total">of {{.CPUTotalLabel}}</div>
-          <div class="usage-bar"><span class="fill-cpu" style="width:{{printf "%.2f" .CPUPercent}}%"></span></div>
-        </div>
+        <pre class="output-pre">{{.CommandOutput}}</pre>
+      </div>
+    </section>
+    {{end}}
+
+    <!-- Overview -->
+    <section class="section">
+      <div class="section-title"><svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M18 17V9M13 17V5M8 17v-3"/></svg> Overview</div>
+      <div class="overview">
+        <div class="kpi accent"><div class="label"><svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M7 7V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2"/></svg> Total Containers</div><div class="value">{{.Total}}</div></div>
+        <div class="kpi green"><div class="label"><svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg> Running</div><div class="value">{{.Running}}</div></div>
+        <div class="kpi warn"><div class="label"><svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg> Stopped</div><div class="value">{{.Stopped}}</div></div>
+        <div class="kpi accent"><div class="label"><svg viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 12l9 4 9-4M3 17l9 4 9-4"/></svg> Images</div><div class="value">{{.Images}}</div></div>
       </div>
 
-      <div class="usage-card">
-        <div class="usage-donut">
-          <svg viewBox="0 0 36 36">
-            <circle class="track" cx="18" cy="18" r="15.9155"/>
-            <circle class="arc arc-mem" cx="18" cy="18" r="15.9155" stroke-dasharray="{{printf "%.2f" .MemPercent}} 100" stroke-dashoffset="0"/>
-          </svg>
-          <div class="pct">{{printf "%.0f" .MemPercent}}%</div>
+      <div class="usage-row">
+        {{with .Usage}}
+        <div class="usage-card">
+          <div class="usage-donut">
+            <svg viewBox="0 0 36 36"><circle class="track" cx="18" cy="18" r="15.9155"/><circle class="arc arc-cpu" cx="18" cy="18" r="15.9155" stroke-dasharray="{{printf "%.2f" .CPUPercent}} 100"/></svg>
+            <div class="pct">{{printf "%.0f" .CPUPercent}}%</div>
+          </div>
+          <div class="usage-meta"><div class="title">CPU</div><div class="used">{{.CPUUsedLabel}}</div><div class="total">of {{.CPUTotalLabel}}</div></div>
         </div>
-        <div class="usage-meta">
-          <div class="title">Memory</div>
-          <div class="used">{{.MemUsedLabel}}</div>
-          <div class="total">of {{.MemTotalLabel}}</div>
-          <div class="usage-bar"><span class="fill-mem" style="width:{{printf "%.2f" .MemPercent}}%"></span></div>
+        <div class="usage-card">
+          <div class="usage-donut">
+            <svg viewBox="0 0 36 36"><circle class="track" cx="18" cy="18" r="15.9155"/><circle class="arc arc-mem" cx="18" cy="18" r="15.9155" stroke-dasharray="{{printf "%.2f" .MemPercent}} 100"/></svg>
+            <div class="pct">{{printf "%.0f" .MemPercent}}%</div>
+          </div>
+          <div class="usage-meta"><div class="title">Memory</div><div class="used">{{.MemUsedLabel}}</div><div class="total">of {{.MemTotalLabel}}</div></div>
         </div>
-      </div>
-
-      <div class="usage-card">
-        <div class="usage-donut">
-          <svg viewBox="0 0 36 36">
-            <circle class="track" cx="18" cy="18" r="15.9155"/>
-            <circle class="arc arc-disk" cx="18" cy="18" r="15.9155" stroke-dasharray="{{printf "%.2f" .DiskPercent}} 100" stroke-dashoffset="0"/>
-          </svg>
-          <div class="pct">{{printf "%.0f" .DiskPercent}}%</div>
+        <div class="usage-card">
+          <div class="usage-donut">
+            <svg viewBox="0 0 36 36"><circle class="track" cx="18" cy="18" r="15.9155"/><circle class="arc arc-disk" cx="18" cy="18" r="15.9155" stroke-dasharray="{{printf "%.2f" .DiskPercent}} 100"/></svg>
+            <div class="pct">{{printf "%.0f" .DiskPercent}}%</div>
+          </div>
+          <div class="usage-meta"><div class="title">Storage (Docker)</div><div class="used">{{.DiskUsedLabel}}</div><div class="total">images + containers + volumes</div></div>
         </div>
-        <div class="usage-meta">
-          <div class="title">Storage (Docker)</div>
-          <div class="used">{{.DiskUsedLabel}}</div>
-          <div class="total">images + containers + volumes</div>
-          <div class="usage-bar"><span class="fill-disk" style="width:{{printf "%.2f" .DiskPercent}}%"></span></div>
+        {{end}}
+      </div>
+    </section>
+
+    <!-- Containers (hero) -->
+    <section class="section">
+      <div class="card">
+        <div class="card-head">
+          <h3><svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M7 7V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2"/></svg> Containers</h3>
+          <span class="count-pill" id="ccount">{{.Total}}</span>
+          <div class="search-wrap">
+            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+            <input id="cfilter" type="text" autocomplete="off" placeholder="Filter by name, image, state or ports…" oninput="filterContainers()" value="{{.Search}}" />
+          </div>
+          <span class="filter-hint" id="filterhint"></span>
         </div>
-      </div>
-      {{end}}
-    </div>
-
-    <div class="kpis">
-			<div class="kpi"><div class="label"><img class="icon" src="/static/icons/cpu.svg" alt="cpu" /> Total Containers</div><div class="value">{{.Total}}</div></div>
-			<div class="kpi"><div class="label"><img class="icon live" src="/static/icons/activity.svg" alt="running" /> Running</div><div class="value">{{.Running}}</div></div>
-			<div class="kpi"><div class="label"><img class="icon" src="/static/icons/triangle-alert.svg" alt="stopped" /> Stopped</div><div class="value">{{.Stopped}}</div></div>
-			<div class="kpi"><div class="label"><img class="icon" src="/static/icons/shield.svg" alt="images" /> Images</div><div class="value">{{.Images}}</div></div>
-    </div>
-
-    <div class="grid">
-      <div class="panel">
-        <h3>Launch Container</h3>
-        <form method="post" action="/containers/create">
-          <div class="row">
-            <input name="name" placeholder="name (optional)" />
-            <input name="image" placeholder="image:tag (required)" required />
-          </div>
-          <div class="row" style="margin-top:8px;">
-            <input name="ports" placeholder="ports e.g. 8081:80,8443:443" style="min-width:320px;" />
-          </div>
-          <div class="row" style="margin-top:8px;">
-            <input name="env" placeholder="env e.g. KEY=a,MODE=prod" style="min-width:320px;" />
-          </div>
-          <div class="row" style="margin-top:8px;">
-            <input name="command" placeholder="command args e.g. sleep,3600" style="min-width:320px;" />
-          </div>
-          <div class="row" style="margin-top:10px; align-items:center;">
-            <label class="small"><input type="checkbox" name="auto_start" checked /> auto-start</label>
-            <button class="btn-primary" type="submit">Create</button>
-          </div>
-        </form>
-      </div>
-
-      <div class="panel">
-        <h3>Quick Notes</h3>
-        <ul class="small">
-          <li>Use comma-separated values for ports/env/command.</li>
-		  <li>Examples: ports 8080:80,8443:443 and env MODE=prod,DEBUG=false.</li>
-          <li>Actions are executed with Docker CLI on this host.</li>
-        </ul>
-      </div>
-    </div>
-
-    <div style="margin-bottom:14px; display:flex; gap:10px; flex-wrap:wrap;">
-      <a href="/ipam" style="display:inline-flex; align-items:center; gap:8px; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:10px 18px; color:var(--accent); text-decoration:none; font-weight:600; font-size:14px; transition:border-color .15s;">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
-        IPAM — IP &amp; Port Manager
-      </a>
-      <a href="/runbooks" style="display:inline-flex; align-items:center; gap:8px; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:10px 18px; color:var(--accent); text-decoration:none; font-weight:600; font-size:14px; transition:border-color .15s;">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-        Runbooks — Automated Workflows
-      </a>
-    </div>
-
-    <div class="panel">
-      <h3>Containers</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Image</th>
-            <th>State</th>
-            <th>Ports</th>
-            <th>CPU</th>
-            <th>Memory</th>
-            <th>Age</th>
-			<th class="actions-col">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {{if .Containers}}
-            {{range .Containers}}
-            <tr>
-              <td><strong>{{.Name}}</strong><div class="small">{{.ID}}</div></td>
-              <td>{{.Image}}</td>
-              <td>
-                {{if eq .State "running"}}
-                  <span class="state-running">running</span>
-                {{else}}
-                  <span class="state-other">{{.State}}</span>
+        <div class="table-scroll">
+          <table id="ctable">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Image</th>
+                <th>State</th>
+                <th>Ports</th>
+                <th>CPU</th>
+                <th>Memory</th>
+                <th>Age</th>
+                <th style="text-align:right;">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {{if .Containers}}
+                {{range .Containers}}
+                <tr data-row data-search="{{.Name}} {{.ID}} {{.Image}} {{.State}} {{.Status}} {{.Ports}}">
+                  <td><div class="c-name">{{.Name}}</div><div class="c-id">{{.ID}}</div></td>
+                  <td><span class="c-image">{{.Image}}</span></td>
+                  <td>
+                    {{if eq .State "running"}}<span class="pill pill-running">running</span>{{else}}<span class="pill pill-other">{{.State}}</span>{{end}}
+                    <div class="c-sub">{{.Status}}</div>
+                  </td>
+                  <td>{{if .Ports}}<span class="c-ports">{{.Ports}}</span>{{else}}<span class="small">—</span>{{end}}</td>
+                  <td class="metric">{{if .CPUPerc}}{{.CPUPerc}}{{else}}<span class="small">—</span>{{end}}</td>
+                  <td class="metric">{{if .MemUsage}}{{.MemUsage}}<div class="c-sub">{{.MemPerc}}</div>{{else}}<span class="small">—</span>{{end}}</td>
+                  <td><span class="small">{{.Created}}</span></td>
+                  <td>
+                    <div class="actions" style="justify-content:flex-end;">
+                      <form method="post" action="/containers/{{.ID}}/start"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-start tip" type="submit" data-tip="Start" aria-label="Start {{.Name}}"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button></form>
+                      <form method="post" action="/containers/{{.ID}}/stop"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-stop tip" type="submit" data-tip="Stop" aria-label="Stop {{.Name}}"><svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1"/></svg></button></form>
+                      <form method="post" action="/containers/{{.ID}}/restart"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-restart tip" type="submit" data-tip="Restart" aria-label="Restart {{.Name}}"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button></form>
+                      <form method="post" action="/containers/{{.ID}}/inspect"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-info tip" type="submit" data-tip="Inspect" aria-label="Inspect {{.Name}}"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.35-4.35"/></svg></button></form>
+                      <form method="post" action="/containers/{{.ID}}/logs"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-logs tip" type="submit" data-tip="Logs" aria-label="Logs {{.Name}}"><svg viewBox="0 0 24 24"><path d="M5 4h14v16H5z"/><path d="M8 8h8"/><path d="M8 12h8"/><path d="M8 16h6"/></svg></button></form>
+                      <form method="post" action="/containers/{{.ID}}/remove" onsubmit="return confirm('Remove container {{.Name}}?')"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-remove tip" type="submit" data-tip="Remove" aria-label="Remove {{.Name}}"><svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M7 6l1 14h8l1-14"/></svg></button></form>
+                    </div>
+                  </td>
+                </tr>
                 {{end}}
-                <div class="small">{{.Status}}</div>
-              </td>
-              <td>{{.Ports}}</td>
-              <td class="metric-cell">
-                {{if .CPUPerc}}
-                  {{.CPUPerc}}
-                {{else}}
-                  <span class="small">—</span>
-                {{end}}
-              </td>
-              <td class="metric-cell">
-                {{if .MemUsage}}
-                  {{.MemUsage}}
-                  <div class="small">{{.MemPerc}}</div>
-                {{else}}
-                  <span class="small">—</span>
-                {{end}}
-              </td>
-              <td>{{.Created}}</td>
-              <td class="actions">
-								<form method="post" action="/containers/{{.ID}}/start">
-									<input type="hidden" name="q" value="{{$.Search}}" />
-									<button class="btn-good btn-icon tip" type="submit" data-tip="Start" title="Start" aria-label="Start {{.Name}}">
-										<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-									</button>
-								</form>
-								<form method="post" action="/containers/{{.ID}}/stop">
-									<input type="hidden" name="q" value="{{$.Search}}" />
-									<button class="btn-warn btn-icon tip" type="submit" data-tip="Stop" title="Stop" aria-label="Stop {{.Name}}">
-										<svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
-									</button>
-								</form>
-								<form method="post" action="/containers/{{.ID}}/restart">
-									<input type="hidden" name="q" value="{{$.Search}}" />
-									<button class="btn-primary btn-icon tip" type="submit" data-tip="Restart" title="Restart" aria-label="Restart {{.Name}}">
-										<svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
-									</button>
-								</form>
-								<form method="post" action="/containers/{{.ID}}/inspect">
-									<input type="hidden" name="q" value="{{$.Search}}" />
-									<button class="btn-primary btn-icon tip" type="submit" data-tip="Inspect" title="Inspect" aria-label="Inspect {{.Name}}">
-										<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.35-4.35"/></svg>
-									</button>
-								</form>
-								<form method="post" action="/containers/{{.ID}}/logs">
-									<input type="hidden" name="q" value="{{$.Search}}" />
-									<button class="btn-primary btn-icon tip" type="submit" data-tip="Logs" title="Logs" aria-label="Logs {{.Name}}">
-										<svg viewBox="0 0 24 24"><path d="M5 4h14v16H5z"/><path d="M8 8h8"/><path d="M8 12h8"/><path d="M8 16h6"/></svg>
-									</button>
-								</form>
-								<form method="post" action="/containers/{{.ID}}/remove" onsubmit="return confirm('Remove container {{.Name}}?')">
-									<input type="hidden" name="q" value="{{$.Search}}" />
-									<button class="btn-danger btn-icon tip" type="submit" data-tip="Remove" title="Remove" aria-label="Remove {{.Name}}">
-										<svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M7 6l1 14h8l1-14"/></svg>
-									</button>
-								</form>
-              </td>
-            </tr>
-            {{end}}
-          {{else}}
-            <tr><td colspan="8" class="small">No containers found.</td></tr>
-          {{end}}
-        </tbody>
-      </table>
-    </div>
-  </div>
+              {{else}}
+                <tr class="empty-row"><td colspan="8">No containers found.</td></tr>
+              {{end}}
+              <tr class="empty-row" id="cnomatch" style="display:none;"><td colspan="8">No containers match your filter.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="quick-links">
+        <a class="quick-link" href="/ipam">
+          <span class="ql-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+          <span><div class="ql-title">IPAM</div><div class="ql-desc">IP &amp; port manager — map host ports and networks</div></span>
+        </a>
+        <a class="quick-link" href="/runbooks">
+          <span class="ql-icon"><svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span>
+          <span><div class="ql-title">Runbooks</div><div class="ql-desc">Automated cleanup, diagnostics &amp; recovery workflows</div></span>
+        </a>
+      </div>
+    </section>
+
+    <!-- Tools -->
+    <section class="section">
+      <div class="section-title"><svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2-2 2.6-2.6z"/></svg> Tools</div>
+      <div class="card">
+        <div class="tabs">
+          <button class="tab active" id="tab-launch" onclick="showTool('launch')"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg> Launch Container</button>
+          <button class="tab" id="tab-run" onclick="showTool('run')"><svg viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg> Run Command</button>
+          <button class="tab" id="tab-ai" onclick="showTool('ai')"><svg viewBox="0 0 24 24"><path d="M12 3l1.9 4.6L18 9l-4.1 1.4L12 15l-1.9-4.6L6 9l4.1-1.4z"/><path d="M5 18l.6 1.8L7 20l-1.4.5L5 22l-.6-1.5L3 20l1.4-.2z"/></svg> AI Assistant</button>
+        </div>
+        <div class="tool-panes">
+          <div class="tool-pane active" id="tool-launch">
+            <form method="post" action="/containers/create">
+              <div class="row">
+                <input class="fld" name="name" placeholder="name (optional)" style="flex:1; min-width:160px;" />
+                <input class="fld" name="image" placeholder="image:tag (required)" required style="flex:2; min-width:220px;" />
+              </div>
+              <div class="row" style="margin-top:10px;">
+                <input class="fld" name="ports" placeholder="ports e.g. 8081:80,8443:443" style="flex:1; min-width:280px;" />
+              </div>
+              <div class="row" style="margin-top:10px;">
+                <input class="fld" name="env" placeholder="env e.g. KEY=a,MODE=prod" style="flex:1; min-width:280px;" />
+              </div>
+              <div class="row" style="margin-top:10px;">
+                <input class="fld" name="command" placeholder="command args e.g. sleep,3600" style="flex:1; min-width:280px;" />
+              </div>
+              <div class="row" style="margin-top:14px; align-items:center;">
+                <label class="small" style="display:flex; align-items:center; gap:6px;"><input type="checkbox" name="auto_start" checked /> auto-start</label>
+                <button class="btn btn-primary" type="submit"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg> Create Container</button>
+              </div>
+            </form>
+            <div class="tool-hint">Use comma-separated values for ports/env/command. Example: ports <code>8080:80,8443:443</code>, env <code>MODE=prod,DEBUG=false</code>.</div>
+          </div>
+
+          <div class="tool-pane" id="tool-run">
+            <form method="post" action="/docker/exec">
+              <input type="hidden" name="q" value="{{.Search}}" />
+              <div class="row" style="align-items:stretch;">
+                <span class="cmd-prefix">docker</span>
+                <input class="fld" name="command" value="{{.CommandInput}}" placeholder="system prune -f" style="flex:1; min-width:240px;" />
+                <button class="btn btn-primary" type="submit">Run</button>
+              </div>
+            </form>
+            <div class="tool-hint">Commands run with the Docker CLI on this host. Output opens in the highlighted panel at the top.</div>
+          </div>
+
+          <div class="tool-pane" id="tool-ai">
+            <form method="post" action="/ai/interpret">
+              <input type="hidden" name="q" value="{{.Search}}" />
+              <textarea class="fld" name="ai_prompt" placeholder="Example: clean unused images and stopped containers safely">{{.AIPrompt}}</textarea>
+              <div class="row" style="margin-top:12px; align-items:center;">
+                <button class="btn btn-primary" type="submit"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3l1.9 4.6L18 9l-4.1 1.4L12 15l-1.9-4.6L6 9l4.1-1.4z"/></svg> Suggest Docker Command</button>
+                <div class="tool-meta">Model: {{.AIModel}}</div>
+              </div>
+            </form>
+            {{if .AISuggestion}}<div class="cmd-output">Suggested: docker {{.AISuggestion}}{{if .AIExplanation}}\n\nWhy: {{.AIExplanation}}{{end}}</div>{{end}}
+            <div class="tool-hint">Powered by local Ollama. Set <code>OLLAMA_BASE_URL</code> env if needed. Suggestions are not executed automatically.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    function showTool(name) {
+      var names = ['launch','run','ai'];
+      for (var i = 0; i < names.length; i++) {
+        var n = names[i];
+        document.getElementById('tool-' + n).classList.toggle('active', n === name);
+        document.getElementById('tab-' + n).classList.toggle('active', n === name);
+      }
+    }
+    function filterContainers() {
+      var q = document.getElementById('cfilter').value.trim().toLowerCase();
+      var rows = document.querySelectorAll('#ctable tbody tr[data-row]');
+      var shown = 0;
+      for (var i = 0; i < rows.length; i++) {
+        var hay = (rows[i].getAttribute('data-search') || '').toLowerCase();
+        var match = q === '' || hay.indexOf(q) !== -1;
+        rows[i].style.display = match ? '' : 'none';
+        if (match) shown++;
+      }
+      var count = document.getElementById('ccount');
+      if (count) count.textContent = shown;
+      var hint = document.getElementById('filterhint');
+      if (hint) hint.textContent = q === '' ? '' : (shown + ' of ' + rows.length);
+      var nomatch = document.getElementById('cnomatch');
+      if (nomatch) nomatch.style.display = (shown === 0 && rows.length > 0) ? '' : 'none';
+    }
+    // Restore active tool tab based on server-side output
+    (function() {
+      var active = '{{if .AISuggestion}}ai{{else if .AIPrompt}}ai{{else if .CommandInput}}run{{else}}launch{{end}}';
+      if (active !== 'launch') showTool(active);
+      // Apply any pre-filled filter on load
+      if (document.getElementById('cfilter').value) filterContainers();
+      // Bring inspect/logs/command output to eye level
+      var outPanel = document.getElementById('output-panel');
+      if (outPanel) {
+        requestAnimationFrame(function() {
+          outPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+      }
+    })();
+  </script>
 </body>
 </html>
 `
