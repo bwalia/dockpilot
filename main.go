@@ -1850,7 +1850,7 @@ const indexHTML = `<!doctype html>
         <div class="card-head">
           <h3><svg viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg> Output</h3>
           {{if .CommandInput}}<span class="mono-pill">docker {{.CommandInput}}</span>{{end}}
-          <a class="btn" href="/{{if .Search}}?q={{.Search}}{{end}}" style="margin-left:auto;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg> Close</a>
+          <button type="button" class="btn" style="margin-left:auto;" onclick="closeOutput()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg> Close</button>
         </div>
         <pre class="output-pre">{{.CommandOutput}}</pre>
       </div>
@@ -2037,6 +2037,11 @@ const indexHTML = `<!doctype html>
         document.getElementById('tool-' + n).classList.toggle('active', n === name);
         document.getElementById('tab-' + n).classList.toggle('active', n === name);
       }
+    }
+    function closeOutput() {
+      var p = document.getElementById('output-panel');
+      if (p) p.parentNode.removeChild(p);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     }
     function filterContainers() {
       var q = document.getElementById('cfilter').value.trim().toLowerCase();
