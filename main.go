@@ -643,7 +643,7 @@ func (a *App) buildDashboardData(search string) (PageData, error) {
 }
 
 func interpretDockerCommandWithOllama(userPrompt string) (AISuggestion, error) {
-	baseURL := strings.TrimRight(envOrDefault("OLLAMA_BASE_URL", "http://localhost:11434/v1"), "/")
+	baseURL := strings.TrimRight(envOrDefault("OLLAMA_BASE_URL", "http://192.168.1.177:11434/v1"), "/")
 	apiKey := strings.TrimSpace(os.Getenv("OLLAMA_API_KEY"))
 	model := envOrDefault("OLLAMA_MODEL", "llama3")
 
