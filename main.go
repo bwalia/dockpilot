@@ -1789,6 +1789,18 @@ const indexHTML = `<!doctype html>
     }
     .empty-row td { text-align:center; padding:48px; color:var(--muted); }
 
+    /* ── Loading overlay (long Docker ops) ── */
+    .loading-overlay { position:fixed; inset:0; z-index:1000; display:none; align-items:center; justify-content:center; background:rgba(10,15,28,0.74); backdrop-filter:blur(5px); -webkit-backdrop-filter:blur(5px); }
+    .loading-overlay.show { display:flex; }
+    .loading-box { background:var(--surface); border:1px solid var(--border-hover); border-radius:var(--radius); padding:30px 40px; text-align:center; box-shadow:0 24px 70px rgba(0,0,0,0.55); min-width:280px; }
+    .spinner { width:48px; height:48px; margin:0 auto 18px; border-radius:50%; border:4px solid var(--surface-3); border-top-color:var(--accent); border-right-color:var(--accent); animation:spin .8s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .loading-msg { font-weight:700; font-size:1.02rem; }
+    .loading-sub { font-size:0.8rem; color:var(--muted); margin-top:4px; margin-bottom:18px; }
+    .loading-bar { height:6px; border-radius:999px; background:var(--surface-3); overflow:hidden; position:relative; }
+    .loading-bar::before { content:''; position:absolute; top:0; bottom:0; left:-40%; width:40%; border-radius:999px; background:linear-gradient(90deg, transparent, var(--accent-light), transparent); animation:indeterminate 1.1s ease-in-out infinite; }
+    @keyframes indeterminate { 0% { left:-40%; } 100% { left:100%; } }
+
     /* ── Quick links ── */
     .quick-links { display:flex; gap:12px; flex-wrap:wrap; margin-top:14px; }
     .quick-link {
@@ -1816,6 +1828,14 @@ const indexHTML = `<!doctype html>
   </style>
 </head>
 <body>
+  <div class="loading-overlay" id="loading-overlay" role="status" aria-live="polite">
+    <div class="loading-box">
+      <div class="spinner"></div>
+      <div class="loading-msg" id="loading-msg">Working…</div>
+      <div class="loading-sub">Running Docker operation, please wait</div>
+      <div class="loading-bar"></div>
+    </div>
+  </div>
   <header class="nav">
     <div class="wrap nav-inner">
       <div class="brand">
@@ -1994,7 +2014,7 @@ const indexHTML = `<!doctype html>
               </div>
               <div class="row" style="margin-top:14px; align-items:center;">
                 <label class="small" style="display:flex; align-items:center; gap:6px;"><input type="checkbox" name="auto_start" checked /> auto-start</label>
-                <button class="btn btn-primary" type="submit"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg> Create Container</button>
+                <button class="btn btn-primary" type="submit" data-loading="Creating container…"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg> Create Container</button>
               </div>
             </form>
             <div class="tool-hint">Use comma-separated values for ports/env/command. Example: ports <code>8080:80,8443:443</code>, env <code>MODE=prod,DEBUG=false</code>.</div>
@@ -2006,7 +2026,7 @@ const indexHTML = `<!doctype html>
               <div class="row" style="align-items:stretch;">
                 <span class="cmd-prefix">docker</span>
                 <input class="fld" name="command" value="{{.CommandInput}}" placeholder="system prune -f" style="flex:1; min-width:240px;" />
-                <button class="btn btn-primary" type="submit">Run</button>
+                <button class="btn btn-primary" type="submit" data-loading="Running command…">Run</button>
               </div>
             </form>
             <div class="tool-hint">Commands run with the Docker CLI on this host. Output opens in the highlighted panel at the top.</div>
@@ -2017,7 +2037,7 @@ const indexHTML = `<!doctype html>
               <input type="hidden" name="q" value="{{.Search}}" />
               <textarea class="fld" name="ai_prompt" placeholder="Example: clean unused images and stopped containers safely">{{.AIPrompt}}</textarea>
               <div class="row" style="margin-top:12px; align-items:center;">
-                <button class="btn btn-primary" type="submit"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3l1.9 4.6L18 9l-4.1 1.4L12 15l-1.9-4.6L6 9l4.1-1.4z"/></svg> Suggest Docker Command</button>
+                <button class="btn btn-primary" type="submit" data-loading="Asking AI… (this can take a while)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3l1.9 4.6L18 9l-4.1 1.4L12 15l-1.9-4.6L6 9l4.1-1.4z"/></svg> Suggest Docker Command</button>
                 <div class="tool-meta">Model: {{.AIModel}}</div>
               </div>
             </form>
@@ -2038,6 +2058,44 @@ const indexHTML = `<!doctype html>
         document.getElementById('tab-' + n).classList.toggle('active', n === name);
       }
     }
+    var loadingTimer = null;
+    function showLoading(msg) {
+      var ov = document.getElementById('loading-overlay');
+      if (!ov) return;
+      document.getElementById('loading-msg').textContent = msg || 'Working…';
+      ov.classList.add('show');
+      // Safety: auto-hide if navigation never happens (e.g. error)
+      if (loadingTimer) clearTimeout(loadingTimer);
+      loadingTimer = setTimeout(hideLoading, 45000);
+    }
+    function hideLoading() {
+      var ov = document.getElementById('loading-overlay');
+      if (ov) ov.classList.remove('show');
+      if (loadingTimer) { clearTimeout(loadingTimer); loadingTimer = null; }
+    }
+    var loadingVerbs = { Start:'Starting container…', Stop:'Stopping container…', Restart:'Restarting container…', Inspect:'Inspecting container…', Logs:'Loading logs…', Remove:'Removing container…' };
+    // Show the spinner whenever a Docker operation is submitted
+    document.addEventListener('submit', function(e) {
+      if (e.defaultPrevented) return; // e.g. user cancelled a confirm()
+      var btn = e.submitter;
+      var msg = 'Working…';
+      if (btn) {
+        if (btn.getAttribute('data-loading')) msg = btn.getAttribute('data-loading');
+        else if (btn.getAttribute('data-tip')) msg = loadingVerbs[btn.getAttribute('data-tip')] || (btn.getAttribute('data-tip') + '…');
+      }
+      showLoading(msg);
+    }, false);
+    // Show the spinner on internal page navigation (Dashboard / IPAM / Runbooks links)
+    document.addEventListener('click', function(e) {
+      var a = e.target.closest ? e.target.closest('a') : null;
+      if (!a) return;
+      var href = a.getAttribute('href') || '';
+      if (a.target === '_blank' || e.metaKey || e.ctrlKey) return;
+      if (href.charAt(0) === '/' ) showLoading('Loading…');
+    }, false);
+    // Hide overlay when a page is restored from the back/forward cache
+    window.addEventListener('pageshow', function(e) { if (e.persisted) hideLoading(); });
+
     function closeOutput() {
       var p = document.getElementById('output-panel');
       if (p) p.parentNode.removeChild(p);
