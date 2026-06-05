@@ -1573,7 +1573,7 @@ const indexHTML = `<!doctype html>
       min-height:100vh;
     }
     a { color:inherit; text-decoration:none; }
-    .wrap { width:100%; max-width:1560px; margin:0 auto; padding:0 28px; }
+    .wrap { width:100%; max-width:none; margin:0; padding:0 28px; }
 
     /* ── Nav ── */
     .nav {
