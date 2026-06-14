@@ -6,6 +6,7 @@
 # Runtime files
 *.log
 *.auth
+/dockpilot-runbooks.json
 
 # OS
 .DS_Store

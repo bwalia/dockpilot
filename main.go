@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -61,6 +62,23 @@ type RunbooksData struct {
 	Error       string
 	AIModel     string
 	AIAnalysis  string
+	Proposal    *RunbookProposal
+}
+
+// RunbookProposal holds an AI-generated set of replacement steps for a runbook,
+// shown as a before/after preview that the user can apply or discard.
+type RunbookProposal struct {
+	RunbookID    string
+	Rationale    string
+	CurrentSteps []RunbookStep
+	NewSteps     []RunbookStep
+	EncodedSteps string // JSON of NewSteps, carried in the apply form
+}
+
+// runbookProposalResponse is the JSON contract returned by the model.
+type runbookProposalResponse struct {
+	Rationale string        `json:"rationale"`
+	Steps     []RunbookStep `json:"steps"`
 }
 
 type PageData struct {
@@ -161,6 +179,9 @@ type IPAMData struct {
 	Now          string
 	DockerHost   string
 	Error        string
+	Success      string
+	AIModel      string
+	AIAnalysis   string
 }
 
 func main() {
@@ -171,13 +192,20 @@ func main() {
 		runbooksTmpl: template.Must(template.New("runbooks").Funcs(funcMap).Parse(runbooksHTML)),
 	}
 
+	if err := loadRunbookOverrides(); err != nil {
+		log.Printf("warning: could not load runbook overrides: %v", err)
+	}
+
 	mux := http.NewServeMux()
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
 	mux.HandleFunc("/landing", app.handleLanding)
 	mux.HandleFunc("/ipam", app.handleIPAM)
+	mux.HandleFunc("/ipam/analyze", app.handleIPAMAnalyze)
 	mux.HandleFunc("/runbooks", app.handleRunbooks)
 	mux.HandleFunc("/runbooks/execute", app.handleRunbookExecute)
 	mux.HandleFunc("/runbooks/analyze", app.handleRunbookAnalyze)
+	mux.HandleFunc("/runbooks/propose", app.handleRunbookPropose)
+	mux.HandleFunc("/runbooks/apply", app.handleRunbookApply)
 	mux.HandleFunc("/", app.handleDashboard)
 	mux.HandleFunc("/docker/exec", app.handleDockerCommand)
 	mux.HandleFunc("/ai/interpret", app.handleAIInterpret)
@@ -369,13 +397,111 @@ var runbookCatalog = []Runbook{
 	},
 }
 
-func findRunbook(id string) *Runbook {
+// runbookMu guards runbookCatalog, which becomes mutable once a user applies
+// AI-suggested step changes.
+var runbookMu sync.RWMutex
+
+// getRunbook returns a copy (including a copied Steps slice) of the runbook with
+// the given id, so callers can read it without holding the lock.
+func getRunbook(id string) (Runbook, bool) {
+	runbookMu.RLock()
+	defer runbookMu.RUnlock()
 	for i := range runbookCatalog {
 		if runbookCatalog[i].ID == id {
-			return &runbookCatalog[i]
+			rb := runbookCatalog[i]
+			rb.Steps = append([]RunbookStep(nil), rb.Steps...)
+			return rb, true
+		}
+	}
+	return Runbook{}, false
+}
+
+// snapshotRunbooks returns a deep copy of the whole catalog for safe iteration.
+func snapshotRunbooks() []Runbook {
+	runbookMu.RLock()
+	defer runbookMu.RUnlock()
+	out := make([]Runbook, len(runbookCatalog))
+	for i := range runbookCatalog {
+		out[i] = runbookCatalog[i]
+		out[i].Steps = append([]RunbookStep(nil), runbookCatalog[i].Steps...)
+	}
+	return out
+}
+
+// replaceRunbookSteps swaps in a new step list for the given runbook id and
+// persists the change to disk so it survives restarts.
+func replaceRunbookSteps(id string, steps []RunbookStep) bool {
+	runbookMu.Lock()
+	defer runbookMu.Unlock()
+	for i := range runbookCatalog {
+		if runbookCatalog[i].ID == id {
+			runbookCatalog[i].Steps = steps
+			if err := saveRunbookOverridesLocked(); err != nil {
+				log.Printf("warning: failed to persist runbook overrides: %v", err)
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func runbooksFilePath() string {
+	return envOrDefault("RUNBOOKS_FILE", "./dockpilot-runbooks.json")
+}
+
+// loadRunbookOverrides reads persisted step overrides (a map of runbook id ->
+// steps) and applies them onto the in-memory catalog. Missing/empty file is not
+// an error. Overrides for unknown runbook ids are ignored.
+func loadRunbookOverrides() error {
+	path := runbooksFilePath()
+	b, err := ioutil.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if strings.TrimSpace(string(b)) == "" {
+		return nil
+	}
+
+	var overrides map[string][]RunbookStep
+	if err := json.Unmarshal(b, &overrides); err != nil {
+		return fmt.Errorf("invalid runbooks file %s: %w", path, err)
+	}
+
+	runbookMu.Lock()
+	defer runbookMu.Unlock()
+	for i := range runbookCatalog {
+		if steps, ok := overrides[runbookCatalog[i].ID]; ok {
+			steps = sanitizeRunbookSteps(steps)
+			if len(steps) > 0 {
+				runbookCatalog[i].Steps = steps
+			}
 		}
 	}
 	return nil
+}
+
+// saveRunbookOverridesLocked writes the full set of current runbook steps to the
+// overrides file. Callers MUST hold runbookMu (write lock).
+func saveRunbookOverridesLocked() error {
+	overrides := make(map[string][]RunbookStep, len(runbookCatalog))
+	for i := range runbookCatalog {
+		overrides[runbookCatalog[i].ID] = runbookCatalog[i].Steps
+	}
+
+	b, err := json.MarshalIndent(overrides, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	path := runbooksFilePath()
+	tmp := path + ".tmp"
+	if err := ioutil.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func (a *App) renderRunbooks(w http.ResponseWriter, data RunbooksData) {
@@ -397,7 +523,7 @@ func (a *App) handleRunbooks(w http.ResponseWriter, r *http.Request) {
 		DockerHost: envOrDefault("DOCKER_HOST", "unix:///var/run/docker.sock"),
 		AIModel:    envOrDefault("OLLAMA_MODEL", "llama3"),
 	}
-	for _, rb := range runbookCatalog {
+	for _, rb := range snapshotRunbooks() {
 		view := RunbookView{Runbook: rb, Selected: rb.ID == selectedID}
 		if view.Selected {
 			view.Results = make([]RunbookStepResult, len(rb.Steps))
@@ -424,11 +550,12 @@ func (a *App) handleRunbookExecute(w http.ResponseWriter, r *http.Request) {
 	mode := strings.TrimSpace(r.FormValue("mode"))
 	stepStr := strings.TrimSpace(r.FormValue("step"))
 
-	rb := findRunbook(runbookID)
-	if rb == nil {
+	rbVal, ok := getRunbook(runbookID)
+	if !ok {
 		http.Error(w, "runbook not found: "+runbookID, http.StatusNotFound)
 		return
 	}
+	rb := &rbVal
 
 	data := RunbooksData{
 		Now:        time.Now().Format("2006-01-02 15:04:05"),
@@ -468,7 +595,7 @@ func (a *App) handleRunbookExecute(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	for _, cat := range runbookCatalog {
+	for _, cat := range snapshotRunbooks() {
 		view := RunbookView{Runbook: cat, Selected: cat.ID == rb.ID}
 		if view.Selected {
 			view.Results = results
@@ -490,28 +617,35 @@ func (a *App) handleRunbookAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 	runbookID := strings.TrimSpace(r.FormValue("runbook_id"))
 
-	rb := findRunbook(runbookID)
-	if rb == nil {
+	rbVal, ok := getRunbook(runbookID)
+	if !ok {
 		http.Error(w, "runbook not found: "+runbookID, http.StatusNotFound)
 		return
 	}
 
+	data := newRunbooksData(runbookID)
+
+	analysis, aiErr := analyzeRunbookWithOllama(&rbVal)
+	if aiErr != nil {
+		data.Error = fmt.Sprintf("AI analysis failed: %v", aiErr)
+	} else {
+		data.AIAnalysis = analysis
+		data.Success = fmt.Sprintf("AI analysis ready for \"%s\"", rbVal.Name)
+	}
+
+	a.renderRunbooks(w, data)
+}
+
+// newRunbooksData builds RunbooksData with the catalog populated and the given
+// runbook selected (with its steps materialized as results).
+func newRunbooksData(selectedID string) RunbooksData {
 	data := RunbooksData{
 		Now:        time.Now().Format("2006-01-02 15:04:05"),
 		DockerHost: envOrDefault("DOCKER_HOST", "unix:///var/run/docker.sock"),
 		AIModel:    envOrDefault("OLLAMA_MODEL", "llama3"),
 	}
-
-	analysis, aiErr := analyzeRunbookWithOllama(rb)
-	if aiErr != nil {
-		data.Error = fmt.Sprintf("AI analysis failed: %v", aiErr)
-	} else {
-		data.AIAnalysis = analysis
-		data.Success = fmt.Sprintf("AI analysis ready for \"%s\"", rb.Name)
-	}
-
-	for _, cat := range runbookCatalog {
-		view := RunbookView{Runbook: cat, Selected: cat.ID == rb.ID}
+	for _, cat := range snapshotRunbooks() {
+		view := RunbookView{Runbook: cat, Selected: cat.ID == selectedID}
 		if view.Selected {
 			view.Results = make([]RunbookStepResult, len(cat.Steps))
 			for i, s := range cat.Steps {
@@ -521,7 +655,175 @@ func (a *App) handleRunbookAnalyze(w http.ResponseWriter, r *http.Request) {
 		}
 		data.Runbooks = append(data.Runbooks, view)
 	}
+	return data
+}
+
+func (a *App) handleRunbookPropose(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	runbookID := strings.TrimSpace(r.FormValue("runbook_id"))
+
+	rbVal, ok := getRunbook(runbookID)
+	if !ok {
+		http.Error(w, "runbook not found: "+runbookID, http.StatusNotFound)
+		return
+	}
+
+	data := newRunbooksData(runbookID)
+
+	proposal, aiErr := proposeRunbookStepsWithOllama(&rbVal)
+	if aiErr != nil {
+		data.Error = fmt.Sprintf("AI proposal failed: %v", aiErr)
+		a.renderRunbooks(w, data)
+		return
+	}
+
+	encoded, _ := json.Marshal(proposal.Steps)
+	data.Proposal = &RunbookProposal{
+		RunbookID:    runbookID,
+		Rationale:    proposal.Rationale,
+		CurrentSteps: rbVal.Steps,
+		NewSteps:     proposal.Steps,
+		EncodedSteps: string(encoded),
+	}
+	data.Success = fmt.Sprintf("AI proposed %d step(s) for \"%s\" — review and apply below", len(proposal.Steps), rbVal.Name)
 	a.renderRunbooks(w, data)
+}
+
+func (a *App) handleRunbookApply(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	runbookID := strings.TrimSpace(r.FormValue("runbook_id"))
+	encoded := r.FormValue("steps")
+
+	var steps []RunbookStep
+	if err := json.Unmarshal([]byte(encoded), &steps); err != nil {
+		http.Error(w, "invalid steps payload", http.StatusBadRequest)
+		return
+	}
+	steps = sanitizeRunbookSteps(steps)
+	if len(steps) == 0 {
+		data := newRunbooksData(runbookID)
+		data.Error = "no valid steps to apply"
+		a.renderRunbooks(w, data)
+		return
+	}
+
+	if !replaceRunbookSteps(runbookID, steps) {
+		http.Error(w, "runbook not found: "+runbookID, http.StatusNotFound)
+		return
+	}
+
+	data := newRunbooksData(runbookID)
+	data.Success = fmt.Sprintf("Applied AI-suggested steps (%d) to the runbook", len(steps))
+	a.renderRunbooks(w, data)
+}
+
+// sanitizeRunbookSteps drops empty steps and strips a leading "docker " prefix so
+// stored commands match the existing catalog convention.
+func sanitizeRunbookSteps(steps []RunbookStep) []RunbookStep {
+	out := make([]RunbookStep, 0, len(steps))
+	for _, s := range steps {
+		cmd := strings.TrimSpace(s.Command)
+		cmd = strings.TrimPrefix(cmd, "docker ")
+		cmd = strings.TrimSpace(cmd)
+		label := strings.TrimSpace(s.Label)
+		if cmd == "" {
+			continue
+		}
+		if label == "" {
+			label = cmd
+		}
+		out = append(out, RunbookStep{Label: label, Command: cmd})
+	}
+	return out
+}
+
+// proposeRunbookStepsWithOllama asks the model to return an improved, structured
+// step list for the runbook as JSON.
+func proposeRunbookStepsWithOllama(rb *Runbook) (runbookProposalResponse, error) {
+	systemPrompt := `You are DockPilot AI, an expert Docker operations reviewer.
+You are given a named runbook (an ordered list of Docker CLI steps). Produce an improved version.
+Return ONLY a JSON object with keys:
+- rationale: a short string explaining what you changed and why.
+- steps: an array of objects, each with "label" (human description) and "command" (a Docker subcommand WITHOUT the leading word "docker").
+
+Rules:
+- Preserve the runbook's original goal and risk level; do not add destructive steps to a low-risk runbook.
+- Keep commands limited to the Docker CLI. Never include host shell commands beyond what the original used.
+- Prefer safer flags and sensible ordering (e.g. snapshot before/after for cleanup).
+- If the runbook is already optimal, return its existing steps unchanged with a rationale saying so.`
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Runbook: %s\n", rb.Name)
+	fmt.Fprintf(&sb, "Category: %s | Risk: %s\n", rb.Category, rb.Risk)
+	fmt.Fprintf(&sb, "Description: %s\n\nCurrent steps:\n", rb.Description)
+	for i, s := range rb.Steps {
+		fmt.Fprintf(&sb, "%d. %s -> docker %s\n", i+1, s.Label, s.Command)
+	}
+
+	raw, err := analyzeWithOllama(systemPrompt, sb.String())
+	if err != nil {
+		return runbookProposalResponse{}, err
+	}
+
+	parsed, err := parseRunbookProposal(raw)
+	if err != nil {
+		return runbookProposalResponse{}, err
+	}
+	parsed.Steps = sanitizeRunbookSteps(parsed.Steps)
+	if len(parsed.Steps) == 0 {
+		return runbookProposalResponse{}, fmt.Errorf("model returned no usable steps")
+	}
+	if strings.TrimSpace(parsed.Rationale) == "" {
+		parsed.Rationale = "AI-proposed step changes."
+	}
+	return parsed, nil
+}
+
+// parseRunbookProposal extracts the JSON proposal from the model output, tolerating
+// code fences and surrounding prose.
+func parseRunbookProposal(raw string) (runbookProposalResponse, error) {
+	var out runbookProposalResponse
+	raw = strings.TrimSpace(raw)
+	if err := json.Unmarshal([]byte(raw), &out); err == nil {
+		return out, nil
+	}
+
+	cleaned := raw
+	if idx := strings.Index(cleaned, "```"); idx >= 0 {
+		cleaned = cleaned[idx+3:]
+		if nl := strings.Index(cleaned, "\n"); nl >= 0 {
+			cleaned = cleaned[nl+1:]
+		}
+		if end := strings.Index(cleaned, "```"); end >= 0 {
+			cleaned = cleaned[:end]
+		}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(cleaned)), &out); err == nil {
+			return out, nil
+		}
+	}
+
+	if start := strings.Index(raw, "{"); start >= 0 {
+		if end := strings.LastIndex(raw, "}"); end > start {
+			if err := json.Unmarshal([]byte(raw[start:end+1]), &out); err == nil {
+				return out, nil
+			}
+		}
+	}
+	return runbookProposalResponse{}, fmt.Errorf("no valid proposal JSON found")
 }
 
 // analyzeRunbookWithOllama asks the local model to review a runbook's steps and
@@ -1452,19 +1754,20 @@ func (a *App) render(w http.ResponseWriter, d PageData) {
 	}
 }
 
-func (a *App) handleIPAM(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/ipam" {
-		http.NotFound(w, r)
-		return
-	}
+type ipamDataWithSearch struct {
+	IPAMData
+	Search string
+}
 
-	search := strings.TrimSpace(r.URL.Query().Get("q"))
+// buildIPAMData gathers Docker networks and port mappings, applying the given
+// search filter. It is shared by the IPAM page and the IPAM AI analysis handler.
+func buildIPAMData(search string) IPAMData {
 	data := IPAMData{
 		Now:        time.Now().Format("2006-01-02 15:04:05"),
 		DockerHost: envOrDefault("DOCKER_HOST", "unix:///var/run/docker.sock"),
+		AIModel:    envOrDefault("OLLAMA_MODEL", "llama3"),
 	}
 
-	// Fetch networks
 	networks, netErr := listDockerNetworks()
 	if netErr == nil {
 		data.Networks = networks
@@ -1473,34 +1776,101 @@ func (a *App) handleIPAM(w http.ResponseWriter, r *http.Request) {
 	mappings, err := listPortMappings()
 	if err != nil {
 		data.Error = fmt.Sprintf("failed to list port mappings: %v", err)
-	} else {
-		// Enrich port mappings with internal IP and network from network data
-		if len(networks) > 0 {
-			cMap := buildContainerNetworkMap(networks)
-			for i, m := range mappings {
-				if info, ok := cMap[m.ContainerName]; ok {
-					mappings[i].InternalIP = info.IP
-					mappings[i].Network = info.Network
-				}
-			}
-		}
-		if search != "" {
-			data.PortMappings = filterPortMappings(mappings, search)
-		} else {
-			data.PortMappings = mappings
-		}
-		data.TotalPorts = len(data.PortMappings)
-		data.UsedRanges = buildPortRanges(data.PortMappings)
+		return data
 	}
 
-	type ipamDataWithSearch struct {
-		IPAMData
-		Search string
+	// Enrich port mappings with internal IP and network from network data
+	if len(networks) > 0 {
+		cMap := buildContainerNetworkMap(networks)
+		for i, m := range mappings {
+			if info, ok := cMap[m.ContainerName]; ok {
+				mappings[i].InternalIP = info.IP
+				mappings[i].Network = info.Network
+			}
+		}
 	}
+	if search != "" {
+		data.PortMappings = filterPortMappings(mappings, search)
+	} else {
+		data.PortMappings = mappings
+	}
+	data.TotalPorts = len(data.PortMappings)
+	data.UsedRanges = buildPortRanges(data.PortMappings)
+	return data
+}
+
+func (a *App) renderIPAM(w http.ResponseWriter, data IPAMData, search string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := a.ipamTmpl.Execute(w, ipamDataWithSearch{data, search}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+func (a *App) handleIPAM(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/ipam" {
+		http.NotFound(w, r)
+		return
+	}
+
+	search := strings.TrimSpace(r.URL.Query().Get("q"))
+	a.renderIPAM(w, buildIPAMData(search), search)
+}
+
+func (a *App) handleIPAMAnalyze(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+
+	search := strings.TrimSpace(r.FormValue("q"))
+	data := buildIPAMData(search)
+
+	analysis, aiErr := analyzeIPAMWithOllama(data)
+	if aiErr != nil {
+		data.Error = fmt.Sprintf("AI analysis failed: %v", aiErr)
+	} else {
+		data.AIAnalysis = analysis
+		data.Success = "AI network analysis ready"
+	}
+	a.renderIPAM(w, data, search)
+}
+
+// analyzeIPAMWithOllama asks the local model to review port allocations and
+// Docker networks for conflicts, exposure risks, and connectivity issues.
+func analyzeIPAMWithOllama(data IPAMData) (string, error) {
+	systemPrompt := `You are DockPilot AI, an expert in Docker networking and host security.
+You are given a host's published Docker port mappings and its Docker networks.
+Respond in concise plain text (no JSON, no markdown headers) covering:
+1. Exposure risks: ports bound to 0.0.0.0 / all interfaces, or sensitive services (databases, admin panels) reachable from the host's external interface.
+2. Conflicts or anomalies: duplicate host ports, overlapping subnets, containers on unexpected networks.
+3. Connectivity observations: containers with no published ports, isolated networks, missing gateways.
+4. Concrete next steps as Docker CLI commands where applicable.
+If the setup looks healthy and well-isolated, say so clearly. Be specific and actionable.`
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Published port mappings (%d):\n", data.TotalPorts)
+	if len(data.PortMappings) == 0 {
+		sb.WriteString("(none)\n")
+	}
+	for _, p := range data.PortMappings {
+		fmt.Fprintf(&sb, "- host %s:%d -> container %s:%d/%s | container=%s state=%s network=%s internalIP=%s\n",
+			p.HostIP, p.HostPort, p.InternalIP, p.ContainerPort, p.Protocol, p.ContainerName, p.State, p.Network, p.InternalIP)
+	}
+
+	fmt.Fprintf(&sb, "\nDocker networks (%d):\n", len(data.Networks))
+	for _, n := range data.Networks {
+		fmt.Fprintf(&sb, "- %s | driver=%s scope=%s subnet=%s gateway=%s containers=%d\n",
+			n.Name, n.Driver, n.Scope, n.Subnet, n.Gateway, len(n.Containers))
+		for _, c := range n.Containers {
+			fmt.Fprintf(&sb, "    * %s (%s)\n", c.Name, c.InternalIP)
+		}
+	}
+
+	return analyzeWithOllama(systemPrompt, sb.String())
 }
 
 func filterPortMappings(mappings []PortMapping, query string) []PortMapping {
@@ -2371,6 +2741,17 @@ const ipamHTML = `<!doctype html>
     .panel { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:14px; margin-bottom:14px; }
     .msg { padding:10px; border-radius:8px; margin:0 0 10px 0; font-size:13px; }
     .err { background:#3f0d15; border:1px solid #7f1d1d; }
+    .ok { background:#022c22; border:1px solid #065f46; }
+    .search-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:18px; }
+    .search-row .search { margin-bottom:0; }
+    .btn-ai { background:linear-gradient(135deg,#7c3aed,#2563eb); border:1px solid #7c3aed; color:#fff; font-weight:600; padding:8px 16px; border-radius:8px; cursor:pointer; font-family:inherit; font-size:13px; }
+    .btn-ai:hover { opacity:0.92; }
+    .ai-panel { border:1px solid #4c1d95; border-radius:12px; background:linear-gradient(180deg,rgba(124,58,237,0.12),rgba(15,23,42,0.4)); padding:14px; margin-bottom:14px; }
+    .ai-head { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+    .ai-title { font-weight:700; color:#c4b5fd; font-size:13px; }
+    .ai-model { margin-left:auto; font-size:11px; color:var(--muted); }
+    .ai-body { background:#0b1324; border:1px solid var(--border); border-radius:8px; padding:12px; font-size:12.5px; line-height:1.55; white-space:pre-wrap; word-break:break-word; max-height:420px; overflow:auto; color:var(--text); margin:0; }
+    .ai-note { margin-top:8px; font-size:11px; color:var(--muted); }
     .kpis { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-bottom:14px; }
     .kpi { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:12px; }
     .kpi .label { color:var(--muted); font-size:12px; display:flex; align-items:center; gap:6px; }
@@ -2434,13 +2815,31 @@ const ipamHTML = `<!doctype html>
       Back to Dashboard
 		</a>
 
-		<form class="search" method="get" action="/ipam" style="margin-bottom:18px;">
-			<input name="q" value="{{.Search}}" placeholder="Search ports, IPs, container name or state" style="min-width:220px;" />
-			<button class="btn-primary" type="submit">Search</button>
-			{{if .Search}}<a class="small" href="/ipam">clear</a>{{end}}
-		</form>
+		<div class="search-row">
+			<form class="search" method="get" action="/ipam">
+				<input name="q" value="{{.Search}}" placeholder="Search ports, IPs, container name or state" style="min-width:220px;" />
+				<button class="btn-primary" type="submit">Search</button>
+				{{if .Search}}<a class="small" href="/ipam">clear</a>{{end}}
+			</form>
+			<form method="post" action="/ipam/analyze">
+				<input type="hidden" name="q" value="{{.Search}}" />
+				<button class="btn-ai" type="submit">✦ Analyze with AI</button>
+			</form>
+		</div>
 
+		{{if .Success}}<div class="msg ok">{{.Success}}</div>{{end}}
 		{{if .Error}}<div class="msg err">{{.Error}}</div>{{end}}
+
+		{{if .AIAnalysis}}
+		<div class="ai-panel">
+			<div class="ai-head">
+				<span class="ai-title">✦ AI Network Analysis</span>
+				<span class="ai-model">Model: {{.AIModel}}</span>
+			</div>
+			<pre class="ai-body">{{.AIAnalysis}}</pre>
+			<div class="ai-note">AI-generated review — verify before acting. Nothing was changed on the host.</div>
+		</div>
+		{{end}}
 
 		<div class="kpis">
       <div class="kpi">
@@ -2623,6 +3022,18 @@ const runbooksHTML = `<!doctype html>
     .rb-ai-model { margin-left:auto; font-size:11px; color:var(--muted); }
     .rb-ai-body { background:#0b1324; border:1px solid var(--border); border-radius:8px; padding:12px; font-size:12.5px; line-height:1.55; white-space:pre-wrap; word-break:break-word; max-height:420px; overflow:auto; color:var(--text); }
     .rb-ai-note { margin-top:8px; font-size:11px; color:var(--muted); }
+    .rb-prop-rationale { font-size:12.5px; color:var(--text); background:#0b1324; border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-bottom:12px; line-height:1.5; }
+    .rb-diff { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .rb-diff-col { background:#0b1324; border:1px solid var(--border); border-radius:8px; padding:10px; }
+    .rb-diff-head { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid var(--border); }
+    .rb-diff-current { color:var(--muted); }
+    .rb-diff-new { color:#86efac; }
+    .rb-diff-step { display:flex; gap:8px; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.04); }
+    .rb-diff-num { flex:0 0 auto; width:20px; height:20px; border-radius:50%; background:var(--surface); border:1px solid var(--border); font-size:11px; display:flex; align-items:center; justify-content:center; color:var(--muted); }
+    .rb-diff-label { font-size:12px; color:var(--text); }
+    .rb-diff-cmd { font-size:11px; color:var(--muted); margin-top:2px; word-break:break-word; }
+    .rb-prop-actions { display:flex; gap:10px; margin-top:12px; align-items:center; }
+    @media (max-width: 760px) { .rb-diff { grid-template-columns:1fr; } }
     .rb-actions { display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
     .rb-empty { padding:40px; text-align:center; color:var(--muted); }
     .rb-empty-title { font-size:16px; color:var(--text); font-weight:700; margin-bottom:8px; }
@@ -2682,6 +3093,10 @@ const runbooksHTML = `<!doctype html>
             <input type="hidden" name="runbook_id" value="{{.Selected.ID}}" />
             <button class="btn-ai" type="submit">✦ Analyze with AI</button>
           </form>
+          <form method="post" action="/runbooks/propose">
+            <input type="hidden" name="runbook_id" value="{{.Selected.ID}}" />
+            <button class="btn-ai" type="submit">✦ Propose Improved Steps</button>
+          </form>
           <a class="back-link" href="/runbooks?id={{.Selected.ID}}" style="align-self:center;">Reset</a>
         </div>
 
@@ -2693,6 +3108,39 @@ const runbooksHTML = `<!doctype html>
           </div>
           <pre class="rb-ai-body">{{.AIAnalysis}}</pre>
           <div class="rb-ai-note">AI-generated suggestions — review before applying. Runbook steps are not modified automatically.</div>
+        </div>
+        {{end}}
+
+        {{if .Proposal}}
+        <div class="rb-ai rb-proposal">
+          <div class="rb-ai-head">
+            <span class="rb-ai-title">✦ Proposed Steps</span>
+            <span class="rb-ai-model">Model: {{.AIModel}}</span>
+          </div>
+          <div class="rb-prop-rationale">{{.Proposal.Rationale}}</div>
+          <div class="rb-diff">
+            <div class="rb-diff-col">
+              <div class="rb-diff-head rb-diff-current">Current ({{len .Proposal.CurrentSteps}})</div>
+              {{range $i, $s := .Proposal.CurrentSteps}}
+              <div class="rb-diff-step"><span class="rb-diff-num">{{add $i 1}}</span><div><div class="rb-diff-label">{{$s.Label}}</div><div class="rb-diff-cmd">$ docker {{$s.Command}}</div></div></div>
+              {{end}}
+            </div>
+            <div class="rb-diff-col">
+              <div class="rb-diff-head rb-diff-new">Proposed ({{len .Proposal.NewSteps}})</div>
+              {{range $i, $s := .Proposal.NewSteps}}
+              <div class="rb-diff-step"><span class="rb-diff-num">{{add $i 1}}</span><div><div class="rb-diff-label">{{$s.Label}}</div><div class="rb-diff-cmd">$ docker {{$s.Command}}</div></div></div>
+              {{end}}
+            </div>
+          </div>
+          <div class="rb-prop-actions">
+            <form method="post" action="/runbooks/apply" onsubmit="return confirm('Replace the steps of this runbook with the {{len .Proposal.NewSteps}} AI-proposed steps?');">
+              <input type="hidden" name="runbook_id" value="{{.Proposal.RunbookID}}" />
+              <input type="hidden" name="steps" value="{{.Proposal.EncodedSteps}}" />
+              <button class="btn-good" type="submit">✓ Apply Proposed Steps</button>
+            </form>
+            <a class="back-link" href="/runbooks?id={{.Proposal.RunbookID}}" style="align-self:center;">Discard</a>
+          </div>
+          <div class="rb-ai-note">Applying replaces this runbook's steps for the current session. Review the commands above before applying.</div>
         </div>
         {{end}}
 
