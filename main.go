@@ -59,6 +59,8 @@ type RunbooksData struct {
 	DockerHost  string
 	Success     string
 	Error       string
+	AIModel     string
+	AIAnalysis  string
 }
 
 type PageData struct {
@@ -175,6 +177,7 @@ func main() {
 	mux.HandleFunc("/ipam", app.handleIPAM)
 	mux.HandleFunc("/runbooks", app.handleRunbooks)
 	mux.HandleFunc("/runbooks/execute", app.handleRunbookExecute)
+	mux.HandleFunc("/runbooks/analyze", app.handleRunbookAnalyze)
 	mux.HandleFunc("/", app.handleDashboard)
 	mux.HandleFunc("/docker/exec", app.handleDockerCommand)
 	mux.HandleFunc("/ai/interpret", app.handleAIInterpret)
@@ -392,6 +395,7 @@ func (a *App) handleRunbooks(w http.ResponseWriter, r *http.Request) {
 	data := RunbooksData{
 		Now:        time.Now().Format("2006-01-02 15:04:05"),
 		DockerHost: envOrDefault("DOCKER_HOST", "unix:///var/run/docker.sock"),
+		AIModel:    envOrDefault("OLLAMA_MODEL", "llama3"),
 	}
 	for _, rb := range runbookCatalog {
 		view := RunbookView{Runbook: rb, Selected: rb.ID == selectedID}
@@ -429,6 +433,7 @@ func (a *App) handleRunbookExecute(w http.ResponseWriter, r *http.Request) {
 	data := RunbooksData{
 		Now:        time.Now().Format("2006-01-02 15:04:05"),
 		DockerHost: envOrDefault("DOCKER_HOST", "unix:///var/run/docker.sock"),
+		AIModel:    envOrDefault("OLLAMA_MODEL", "llama3"),
 	}
 
 	results := make([]RunbookStepResult, len(rb.Steps))
@@ -472,6 +477,106 @@ func (a *App) handleRunbookExecute(w http.ResponseWriter, r *http.Request) {
 		data.Runbooks = append(data.Runbooks, view)
 	}
 	a.renderRunbooks(w, data)
+}
+
+func (a *App) handleRunbookAnalyze(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	runbookID := strings.TrimSpace(r.FormValue("runbook_id"))
+
+	rb := findRunbook(runbookID)
+	if rb == nil {
+		http.Error(w, "runbook not found: "+runbookID, http.StatusNotFound)
+		return
+	}
+
+	data := RunbooksData{
+		Now:        time.Now().Format("2006-01-02 15:04:05"),
+		DockerHost: envOrDefault("DOCKER_HOST", "unix:///var/run/docker.sock"),
+		AIModel:    envOrDefault("OLLAMA_MODEL", "llama3"),
+	}
+
+	analysis, aiErr := analyzeRunbookWithOllama(rb)
+	if aiErr != nil {
+		data.Error = fmt.Sprintf("AI analysis failed: %v", aiErr)
+	} else {
+		data.AIAnalysis = analysis
+		data.Success = fmt.Sprintf("AI analysis ready for \"%s\"", rb.Name)
+	}
+
+	for _, cat := range runbookCatalog {
+		view := RunbookView{Runbook: cat, Selected: cat.ID == rb.ID}
+		if view.Selected {
+			view.Results = make([]RunbookStepResult, len(cat.Steps))
+			for i, s := range cat.Steps {
+				view.Results[i] = RunbookStepResult{Index: i, Label: s.Label, Command: s.Command}
+			}
+			data.Selected = &view
+		}
+		data.Runbooks = append(data.Runbooks, view)
+	}
+	a.renderRunbooks(w, data)
+}
+
+// analyzeRunbookWithOllama asks the local model to review a runbook's steps and
+// suggest improvements, safer alternatives, or missing steps.
+func analyzeRunbookWithOllama(rb *Runbook) (string, error) {
+	systemPrompt := `You are DockPilot AI, an expert Docker operations reviewer.
+You are given a named runbook (an ordered list of Docker CLI steps) and must review it.
+Respond in concise plain text (no JSON, no markdown headers) covering:
+1. Overall assessment of whether the steps achieve the runbook's stated goal.
+2. Any steps that are redundant, risky, or out of order.
+3. Concrete improvements: better flags, safer alternatives, or additional steps that should be added.
+4. If the runbook is already optimal, say so clearly.
+Keep every command suggestion limited to the Docker CLI. Be specific and actionable.`
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Runbook: %s\n", rb.Name)
+	fmt.Fprintf(&sb, "Category: %s | Risk: %s\n", rb.Category, rb.Risk)
+	fmt.Fprintf(&sb, "Description: %s\n\nSteps:\n", rb.Description)
+	for i, s := range rb.Steps {
+		fmt.Fprintf(&sb, "%d. %s -> docker %s\n", i+1, s.Label, s.Command)
+	}
+
+	return analyzeWithOllama(systemPrompt, sb.String())
+}
+
+// analyzeContainerWithOllama gathers a container's metadata, recent logs and
+// live stats, then asks the local model for a health/troubleshooting summary.
+func analyzeContainerWithOllama(id string) (string, error) {
+	inspectOut, _ := runDockerCombined("inspect", "--format",
+		"Name={{.Name}} Image={{.Config.Image}} State={{.State.Status}} Health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} RestartCount={{.RestartCount}} ExitCode={{.State.ExitCode}} Error={{.State.Error}}",
+		id)
+	statsOut, _ := runDockerCombined("stats", "--no-stream", "--format",
+		"CPU={{.CPUPerc}} Mem={{.MemUsage}} Mem%={{.MemPerc}} NetIO={{.NetIO}} BlockIO={{.BlockIO}}", id)
+	logsOut, _ := runDockerCombined("logs", "--tail", "120", id)
+
+	logsOut = strings.TrimSpace(logsOut)
+	if len(logsOut) > 6000 {
+		logsOut = logsOut[len(logsOut)-6000:]
+	}
+	if logsOut == "" {
+		logsOut = "(no logs)"
+	}
+
+	systemPrompt := `You are DockPilot AI, an expert Docker operations engineer.
+You are given one container's metadata, live resource stats, and recent logs.
+Respond in concise plain text (no JSON, no markdown headers) covering:
+1. Health summary: is the container healthy, degraded, or failing, and why.
+2. Notable signals in the logs or stats (errors, restarts, OOM, high CPU/memory).
+3. Concrete next steps as Docker CLI commands the operator can run.
+If everything looks healthy, say so clearly. Be specific and actionable.`
+
+	userContent := fmt.Sprintf("Metadata: %s\n\nStats: %s\n\nRecent logs (last 120 lines):\n%s",
+		strings.TrimSpace(inspectOut), strings.TrimSpace(statsOut), logsOut)
+
+	return analyzeWithOllama(systemPrompt, userContent)
 }
 
 func executeRunbookCommand(raw string) (string, error) {
@@ -759,6 +864,69 @@ func parseAISuggestion(raw string) (AISuggestion, error) {
 	return AISuggestion{}, fmt.Errorf("no valid AI JSON found")
 }
 
+// analyzeWithOllama sends a system prompt plus arbitrary context to the local
+// Ollama (OpenAI-compatible) endpoint and returns the model's free-text reply.
+// It shares the same env-var configuration as interpretDockerCommandWithOllama.
+func analyzeWithOllama(systemPrompt, userContent string) (string, error) {
+	baseURL := strings.TrimRight(envOrDefault("OLLAMA_BASE_URL", "http://192.168.1.177:11434/v1"), "/")
+	apiKey := strings.TrimSpace(os.Getenv("OLLAMA_API_KEY"))
+	model := envOrDefault("OLLAMA_MODEL", "llama3")
+
+	reqBody := map[string]interface{}{
+		"model": model,
+		"messages": []map[string]string{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": userContent},
+		},
+		"temperature": 0.3,
+	}
+
+	b, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/chat/completions", bytes.NewReader(b))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	client := &http.Client{Timeout: 90 * time.Second}
+	res, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+
+	body, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		return "", err
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return "", fmt.Errorf("ollama returned %s", res.Status)
+	}
+
+	var chatResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &chatResp); err != nil {
+		return "", fmt.Errorf("invalid ollama response: %w", err)
+	}
+	if len(chatResp.Choices) == 0 {
+		return "", fmt.Errorf("empty ollama choices")
+	}
+
+	return strings.TrimSpace(chatResp.Choices[0].Message.Content), nil
+}
+
 func (a *App) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -870,6 +1038,23 @@ func (a *App) handleContainerAction(w http.ResponseWriter, r *http.Request) {
 			d.Error = fmt.Sprintf("logs failed: %v", cmdErr)
 		} else {
 			d.Success = "container logs loaded (last 200 lines)"
+		}
+		a.render(w, d)
+		return
+	case "analyze":
+		d, err := a.buildDashboardData(search)
+		if err != nil {
+			a.render(w, PageData{Error: err.Error()})
+			return
+		}
+		d.CommandInput = "AI analyze " + id
+		analysis, aiErr := analyzeContainerWithOllama(id)
+		if aiErr != nil {
+			d.CommandOutput = "(analysis unavailable)"
+			d.Error = fmt.Sprintf("AI analysis failed: %v", aiErr)
+		} else {
+			d.CommandOutput = analysis
+			d.Success = "AI container analysis ready"
 		}
 		a.render(w, d)
 		return
@@ -1781,6 +1966,7 @@ const indexHTML = `<!doctype html>
     .ic-start:hover { color:var(--success); border-color:var(--success-border); background:var(--success-bg); }
     .ic-stop:hover, .ic-restart:hover { color:var(--warning); border-color:rgba(251,191,36,0.3); background:var(--warning-bg); }
     .ic-info:hover, .ic-logs:hover { color:var(--accent-light); border-color:var(--accent); background:var(--accent-glow); }
+    .ic-ai:hover { color:#c4b5fd; border-color:#7c3aed; background:rgba(124,58,237,0.16); }
     .ic-remove:hover { color:var(--danger); border-color:rgba(239,68,68,0.3); background:var(--danger-bg); }
     .tip:hover::after {
       content:attr(data-tip); position:absolute; bottom:calc(100% + 7px); left:50%; transform:translateX(-50%);
@@ -1959,6 +2145,7 @@ const indexHTML = `<!doctype html>
                       <form method="post" action="/containers/{{.ID}}/start"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-start tip" type="submit" data-tip="Start" aria-label="Start {{.Name}}"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button></form>
                       <form method="post" action="/containers/{{.ID}}/stop"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-stop tip" type="submit" data-tip="Stop" aria-label="Stop {{.Name}}"><svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1"/></svg></button></form>
                       <form method="post" action="/containers/{{.ID}}/restart"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-restart tip" type="submit" data-tip="Restart" aria-label="Restart {{.Name}}"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button></form>
+                      <form method="post" action="/containers/{{.ID}}/analyze"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-ai tip" type="submit" data-tip="Analyze with AI" aria-label="Analyze {{.Name}} with AI" data-loading="Analyzing container with AI… (this can take a while)"><svg viewBox="0 0 24 24"><path d="M12 3l1.9 4.6L18 9l-4.1 1.4L12 15l-1.9-4.6L6 9l4.1-1.4z"/><path d="M5 18l.9 2.2L8 21l-2.1.8L5 24l-.9-2.2L2 21l2.1-.8z"/></svg></button></form>
                       <form method="post" action="/containers/{{.ID}}/inspect"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-info tip" type="submit" data-tip="Inspect" aria-label="Inspect {{.Name}}"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.35-4.35"/></svg></button></form>
                       <form method="post" action="/containers/{{.ID}}/logs"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-logs tip" type="submit" data-tip="Logs" aria-label="Logs {{.Name}}"><svg viewBox="0 0 24 24"><path d="M5 4h14v16H5z"/><path d="M8 8h8"/><path d="M8 12h8"/><path d="M8 16h6"/></svg></button></form>
                       <form method="post" action="/containers/{{.ID}}/remove" onsubmit="return confirm('Remove container {{.Name}}?')"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-remove tip" type="submit" data-tip="Remove" aria-label="Remove {{.Name}}"><svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M7 6l1 14h8l1-14"/></svg></button></form>
@@ -2428,6 +2615,14 @@ const runbooksHTML = `<!doctype html>
     .btn-primary { background:var(--accent); border-color:var(--accent); color:white; font-weight:700; }
     .btn-good { background:var(--success); border-color:var(--success); color:#07140f; font-weight:700; }
     .btn-danger { background:var(--danger); border-color:var(--danger); color:#fff; font-weight:700; }
+    .btn-ai { background:linear-gradient(135deg,#7c3aed,#2563eb); border-color:#7c3aed; color:#fff; font-weight:700; }
+    .btn-ai:hover { opacity:0.92; }
+    .rb-ai { margin:0 0 18px; border:1px solid #4c1d95; border-radius:10px; background:linear-gradient(180deg,rgba(124,58,237,0.12),rgba(15,23,42,0.4)); padding:14px; }
+    .rb-ai-head { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+    .rb-ai-title { font-weight:700; color:#c4b5fd; font-size:13px; }
+    .rb-ai-model { margin-left:auto; font-size:11px; color:var(--muted); }
+    .rb-ai-body { background:#0b1324; border:1px solid var(--border); border-radius:8px; padding:12px; font-size:12.5px; line-height:1.55; white-space:pre-wrap; word-break:break-word; max-height:420px; overflow:auto; color:var(--text); }
+    .rb-ai-note { margin-top:8px; font-size:11px; color:var(--muted); }
     .rb-actions { display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
     .rb-empty { padding:40px; text-align:center; color:var(--muted); }
     .rb-empty-title { font-size:16px; color:var(--text); font-weight:700; margin-bottom:8px; }
@@ -2483,8 +2678,23 @@ const runbooksHTML = `<!doctype html>
             <input type="hidden" name="mode" value="all" />
             <button class="btn-primary" type="submit">▶ Run All Steps</button>
           </form>
+          <form method="post" action="/runbooks/analyze">
+            <input type="hidden" name="runbook_id" value="{{.Selected.ID}}" />
+            <button class="btn-ai" type="submit">✦ Analyze with AI</button>
+          </form>
           <a class="back-link" href="/runbooks?id={{.Selected.ID}}" style="align-self:center;">Reset</a>
         </div>
+
+        {{if .AIAnalysis}}
+        <div class="rb-ai">
+          <div class="rb-ai-head">
+            <span class="rb-ai-title">✦ AI Analysis</span>
+            <span class="rb-ai-model">Model: {{.AIModel}}</span>
+          </div>
+          <pre class="rb-ai-body">{{.AIAnalysis}}</pre>
+          <div class="rb-ai-note">AI-generated suggestions — review before applying. Runbook steps are not modified automatically.</div>
+        </div>
+        {{end}}
 
         {{range .Selected.Results}}
         <div class="rb-step {{if .Executed}}{{if .Err}}failed{{else}}executed{{end}}{{end}}">
