@@ -18,7 +18,9 @@ PORT="${DOCKPILOT_PORT:-8090}"
 
 APP_USER="$(id -un)"
 APP_HOME="$HOME"
-BIN_DST="$APP_HOME/dockpilot"
+# Install to a standard system path to avoid colliding with a $HOME/dockpilot
+# directory (e.g. a source checkout) that exists on some hosts.
+BIN_DST="/usr/local/bin/dockpilot"
 ENV_FILE="$APP_HOME/dockpilot.env"
 AUTH_FILE="$APP_HOME/dockpilot.auth"
 UNIT="/etc/systemd/system/dockpilot.service"
@@ -34,9 +36,9 @@ sudo pkill -x dockpilot 2>/dev/null || true
 sudo pkill -x dockpilot-linux 2>/dev/null || true
 sleep 1
 
-# 2. Install the new binary, keeping the previous one as a rollback copy.
-[ -f "$BIN_DST" ] && cp -f "$BIN_DST" "$APP_HOME/dockpilot-prev" || true
-install -m 0755 "$BIN_SRC" "$BIN_DST"
+# 2. Install the new binary (sudo: /usr/local/bin), keeping a rollback copy.
+[ -f "$BIN_DST" ] && sudo cp -f "$BIN_DST" "${BIN_DST}-prev" || true
+sudo install -m 0755 "$BIN_SRC" "$BIN_DST"
 
 # 3. Seed env file on first install (kept across deploys afterwards).
 if [ ! -f "$ENV_FILE" ]; then
