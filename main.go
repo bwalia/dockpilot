@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -36,6 +37,7 @@ type Runbook struct {
 	Category    string
 	Risk        string
 	Steps       []RunbookStep
+	UserCreated bool `json:",omitempty"`
 }
 
 type RunbookStepResult struct {
@@ -99,6 +101,11 @@ type PageData struct {
 	Success       string
 	Now           string
 	DockerHost    string
+	// AISteps holds Docker commands extracted from an AI container analysis so the
+	// operator can run them ad-hoc or save them permanently as a runbook.
+	AISteps        []RunbookStep
+	AIStepsEncoded string
+	AIStepsTitle   string
 }
 
 type AISuggestion struct {
@@ -192,6 +199,9 @@ func main() {
 		runbooksTmpl: template.Must(template.New("runbooks").Funcs(funcMap).Parse(runbooksHTML)),
 	}
 
+	if err := loadUserRunbooks(); err != nil {
+		log.Printf("warning: could not load user runbooks: %v", err)
+	}
 	if err := loadRunbookOverrides(); err != nil {
 		log.Printf("warning: could not load runbook overrides: %v", err)
 	}
@@ -209,6 +219,8 @@ func main() {
 	mux.HandleFunc("/", app.handleDashboard)
 	mux.HandleFunc("/docker/exec", app.handleDockerCommand)
 	mux.HandleFunc("/ai/interpret", app.handleAIInterpret)
+	mux.HandleFunc("/ai/runbook/run", app.handleAIRunbookRun)
+	mux.HandleFunc("/ai/runbook/save", app.handleAIRunbookSave)
 	mux.HandleFunc("/containers/create", app.handleCreate)
 	mux.HandleFunc("/containers/", app.handleContainerAction)
 
@@ -488,6 +500,9 @@ func loadRunbookOverrides() error {
 func saveRunbookOverridesLocked() error {
 	overrides := make(map[string][]RunbookStep, len(runbookCatalog))
 	for i := range runbookCatalog {
+		if runbookCatalog[i].UserCreated {
+			continue // user runbooks live in their own file
+		}
 		overrides[runbookCatalog[i].ID] = runbookCatalog[i].Steps
 	}
 
@@ -749,6 +764,167 @@ func sanitizeRunbookSteps(steps []RunbookStep) []RunbookStep {
 		out = append(out, RunbookStep{Label: label, Command: cmd})
 	}
 	return out
+}
+
+// dockerCmdRe matches a "docker ..." command, whether wrapped in backticks or
+// inline in prose. It stops at a backtick, newline, or sentence-ending period.
+var dockerCmdRe = regexp.MustCompile("docker[ \\t]+[^`\\n]+")
+
+// interactiveFlags are stripped from AI-suggested commands so they can run as a
+// safe one-shot (no follow/attach/tty that would block forever).
+var interactiveFlags = map[string]bool{
+	"-f": true, "--follow": true,
+	"-it": true, "-ti": true,
+	"-i": true, "--interactive": true,
+	"-t": true, "--tty": true,
+	"-d": true, "--detach": true,
+}
+
+// sanitizeAIStepCommand normalizes a raw "docker ..." command into a safe,
+// non-blocking subcommand (without the leading "docker"). Returns "" if nothing
+// runnable remains.
+func sanitizeAIStepCommand(raw string) string {
+	cmd := strings.TrimSpace(raw)
+	cmd = strings.TrimPrefix(cmd, "docker ")
+	cmd = strings.Trim(cmd, " \t.`'\"")
+	if cmd == "" {
+		return ""
+	}
+	fields := strings.Fields(cmd)
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if interactiveFlags[f] {
+			continue
+		}
+		out = append(out, f)
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	joined := strings.Join(out, " ")
+	// Force streaming subcommands into single-shot mode (handles both "docker
+	// stats ..." and the verbose "docker container stats ..." forms).
+	if hasWord(out, "stats") && !strings.Contains(joined, "--no-stream") {
+		joined += " --no-stream"
+	}
+	if hasWord(out, "logs") && !strings.Contains(joined, "--tail") {
+		joined += " --tail 200"
+	}
+	return strings.TrimSpace(joined)
+}
+
+func hasWord(fields []string, w string) bool {
+	for _, f := range fields {
+		if f == w {
+			return true
+		}
+	}
+	return false
+}
+
+// extractRunbookStepsFromText pulls Docker CLI commands out of a free-text AI
+// analysis and returns them as sanitized, de-duplicated runbook steps.
+func extractRunbookStepsFromText(text string) []RunbookStep {
+	var steps []RunbookStep
+	seen := map[string]bool{}
+	for _, m := range dockerCmdRe.FindAllString(text, -1) {
+		cmd := sanitizeAIStepCommand(m)
+		if cmd == "" || seen[cmd] {
+			continue
+		}
+		seen[cmd] = true
+		steps = append(steps, RunbookStep{Label: "docker " + cmd, Command: cmd})
+	}
+	return steps
+}
+
+// executeAIStep runs a single Docker subcommand with a hard timeout so an
+// interactive or long-running command can never hang the request.
+func executeAIStep(raw string) (string, error) {
+	cmd := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw), "docker "))
+	if cmd == "" {
+		return "", fmt.Errorf("empty command")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	args := strings.Fields(cmd)
+	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	text := strings.TrimSpace(string(out))
+	if ctx.Err() == context.DeadlineExceeded {
+		return text, fmt.Errorf("timed out after 30s (skipped interactive/long-running command)")
+	}
+	if err != nil {
+		if text == "" {
+			text = err.Error()
+		}
+		return text, fmt.Errorf("%s", text)
+	}
+	return text, nil
+}
+
+// runbooksUserFilePath is where user-created (AI-saved) runbooks are persisted as
+// full definitions, separate from the built-in step overrides file.
+func runbooksUserFilePath() string {
+	return envOrDefault("RUNBOOKS_USER_FILE", "./dockpilot-user-runbooks.json")
+}
+
+// loadUserRunbooks reads persisted user runbooks and appends them to the catalog.
+func loadUserRunbooks() error {
+	b, err := ioutil.ReadFile(runbooksUserFilePath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if strings.TrimSpace(string(b)) == "" {
+		return nil
+	}
+	var rbs []Runbook
+	if err := json.Unmarshal(b, &rbs); err != nil {
+		return fmt.Errorf("invalid user runbooks file: %w", err)
+	}
+	runbookMu.Lock()
+	defer runbookMu.Unlock()
+	for _, rb := range rbs {
+		rb.UserCreated = true
+		rb.Steps = sanitizeRunbookSteps(rb.Steps)
+		if rb.ID == "" || len(rb.Steps) == 0 {
+			continue
+		}
+		runbookCatalog = append(runbookCatalog, rb)
+	}
+	return nil
+}
+
+// saveUserRunbooksLocked persists all user-created runbooks. Callers MUST hold
+// runbookMu (write lock).
+func saveUserRunbooksLocked() error {
+	var rbs []Runbook
+	for i := range runbookCatalog {
+		if runbookCatalog[i].UserCreated {
+			rbs = append(rbs, runbookCatalog[i])
+		}
+	}
+	b, err := json.MarshalIndent(rbs, "", "  ")
+	if err != nil {
+		return err
+	}
+	path := runbooksUserFilePath()
+	tmp := path + ".tmp"
+	if err := ioutil.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// addUserRunbook appends a new user-created runbook to the catalog and persists it.
+func addUserRunbook(rb Runbook) error {
+	runbookMu.Lock()
+	defer runbookMu.Unlock()
+	rb.UserCreated = true
+	runbookCatalog = append(runbookCatalog, rb)
+	return saveUserRunbooksLocked()
 }
 
 // proposeRunbookStepsWithOllama asks the model to return an improved, structured
@@ -1357,6 +1533,13 @@ func (a *App) handleContainerAction(w http.ResponseWriter, r *http.Request) {
 		} else {
 			d.CommandOutput = analysis
 			d.Success = "AI container analysis ready"
+			if steps := extractRunbookStepsFromText(analysis); len(steps) > 0 {
+				d.AISteps = steps
+				if enc, e := json.Marshal(steps); e == nil {
+					d.AIStepsEncoded = string(enc)
+				}
+				d.AIStepsTitle = "AI remediation: " + containerNameByID(d.Containers, id)
+			}
 		}
 		a.render(w, d)
 		return
@@ -1379,6 +1562,122 @@ func (a *App) handleContainerAction(w http.ResponseWriter, r *http.Request) {
 		redirectPath += "&q=" + urlQueryEscape(search)
 	}
 	http.Redirect(w, r, redirectPath, http.StatusSeeOther)
+}
+
+// containerNameByID returns a friendly container name for an id (matching by id
+// prefix), falling back to the short id when not found.
+func containerNameByID(containers []ContainerView, id string) string {
+	for _, c := range containers {
+		if c.ID == id || strings.HasPrefix(c.ID, id) || strings.HasPrefix(id, c.ID) {
+			if c.Name != "" {
+				return c.Name
+			}
+		}
+	}
+	return shortID(id)
+}
+
+// handleAIRunbookRun executes the AI-suggested steps ad-hoc (without saving) and
+// shows the combined output in the dashboard output panel.
+func (a *App) handleAIRunbookRun(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		redirectError(w, r, fmt.Sprintf("invalid form: %v", err))
+		return
+	}
+	search := strings.TrimSpace(r.FormValue("q"))
+
+	var steps []RunbookStep
+	if err := json.Unmarshal([]byte(r.FormValue("steps")), &steps); err != nil {
+		redirectError(w, r, "invalid steps payload")
+		return
+	}
+	steps = sanitizeRunbookSteps(steps)
+
+	d, err := a.buildDashboardData(search)
+	if err != nil {
+		a.render(w, PageData{Error: err.Error()})
+		return
+	}
+	d.CommandInput = "AI runbook (ad-hoc run)"
+
+	if len(steps) == 0 {
+		d.Error = "no runnable steps found in the analysis"
+		a.render(w, d)
+		return
+	}
+
+	var sb strings.Builder
+	failed := 0
+	for i, s := range steps {
+		out, runErr := executeAIStep(s.Command)
+		fmt.Fprintf(&sb, "[%d/%d] $ docker %s\n", i+1, len(steps), s.Command)
+		if runErr != nil {
+			failed++
+			fmt.Fprintf(&sb, "ERROR: %s\n", runErr.Error())
+		}
+		if strings.TrimSpace(out) != "" {
+			sb.WriteString(out)
+			sb.WriteString("\n")
+		} else if runErr == nil {
+			sb.WriteString("(no output)\n")
+		}
+		sb.WriteString("\n")
+	}
+	d.CommandOutput = strings.TrimSpace(sb.String())
+	if failed == 0 {
+		d.Success = fmt.Sprintf("Ran %d AI step(s) successfully", len(steps))
+	} else {
+		d.Error = fmt.Sprintf("%d of %d step(s) failed", failed, len(steps))
+	}
+	a.render(w, d)
+}
+
+// handleAIRunbookSave persists the AI-suggested steps as a new user runbook so it
+// appears permanently in the Runbooks page.
+func (a *App) handleAIRunbookSave(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		redirectError(w, r, fmt.Sprintf("invalid form: %v", err))
+		return
+	}
+
+	var steps []RunbookStep
+	if err := json.Unmarshal([]byte(r.FormValue("steps")), &steps); err != nil {
+		redirectError(w, r, "invalid steps payload")
+		return
+	}
+	steps = sanitizeRunbookSteps(steps)
+	if len(steps) == 0 {
+		redirectError(w, r, "no valid steps to save")
+		return
+	}
+
+	name := strings.TrimSpace(r.FormValue("name"))
+	if name == "" {
+		name = "AI Runbook"
+	}
+
+	rb := Runbook{
+		ID:          fmt.Sprintf("ai-%d", time.Now().UnixNano()),
+		Name:        name,
+		Description: "Saved from AI container analysis.",
+		Category:    "AI",
+		Risk:        "medium",
+		Steps:       steps,
+		UserCreated: true,
+	}
+	if err := addUserRunbook(rb); err != nil {
+		redirectError(w, r, fmt.Sprintf("failed to save runbook: %v", err))
+		return
+	}
+	http.Redirect(w, r, "/runbooks?id="+rb.ID, http.StatusSeeOther)
 }
 
 func listContainers() ([]ContainerView, error) {
@@ -2292,6 +2591,19 @@ const indexHTML = `<!doctype html>
     .output-pre { margin:0; padding:18px 20px; font-family:var(--mono); font-size:0.78rem; line-height:1.6; color:var(--text-secondary); white-space:pre; overflow:auto; max-height:60vh; }
     .output-pre::-webkit-scrollbar { width:10px; height:10px; }
     .output-pre::-webkit-scrollbar-thumb { background:var(--surface-3); border-radius:6px; }
+    /* ── Runbook from AI analysis ── */
+    .ai-runbook { border-top:1px solid var(--border); padding:16px 20px; }
+    .ai-runbook h4 { font-size:0.92rem; font-weight:700; margin-bottom:4px; display:flex; align-items:center; gap:8px; }
+    .ai-runbook h4 svg { width:16px; height:16px; stroke:var(--accent-light); fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+    .ai-runbook .hint { font-size:0.78rem; color:var(--muted); margin-bottom:13px; }
+    ol.ai-steps { list-style:none; counter-reset:aistep; margin:0 0 14px; padding:0; display:flex; flex-direction:column; gap:6px; }
+    ol.ai-steps li { counter-increment:aistep; display:flex; align-items:center; gap:11px; background:var(--bg); border:1px solid var(--border); border-radius:9px; padding:9px 12px; }
+    ol.ai-steps li::before { content:counter(aistep); width:22px; height:22px; flex-shrink:0; border-radius:50%; background:var(--accent-glow); color:var(--accent-light); font-size:0.72rem; font-weight:800; display:flex; align-items:center; justify-content:center; }
+    ol.ai-steps li code { font-family:var(--mono); font-size:0.78rem; color:var(--text-secondary); word-break:break-all; }
+    .ai-actions { display:flex; gap:10px; flex-wrap:wrap; align-items:stretch; }
+    .ai-actions form { margin:0; display:flex; gap:9px; }
+    .ai-actions .save-form { flex:1; min-width:280px; }
+    .ai-actions .save-form input { flex:1; min-width:160px; }
     .tool-hint { font-size:0.82rem; color:var(--muted); line-height:1.7; margin-top:10px; }
     .tool-hint code { font-family:var(--mono); background:var(--bg); padding:1px 6px; border-radius:5px; border:1px solid var(--border); font-size:0.76rem; color:var(--accent-light); }
 
@@ -2429,6 +2741,27 @@ const indexHTML = `<!doctype html>
           <button type="button" class="btn" style="margin-left:auto;" onclick="closeOutput()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg> Close</button>
         </div>
         <pre class="output-pre">{{.CommandOutput}}</pre>
+        {{if .AISteps}}
+        <div class="ai-runbook">
+          <h4><svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> Runbook from this analysis</h4>
+          <div class="hint">{{len .AISteps}} Docker command(s) extracted &middot; interactive/streaming flags removed for safe one-shot runs.</div>
+          <ol class="ai-steps">
+            {{range .AISteps}}<li><code>docker {{.Command}}</code></li>{{end}}
+          </ol>
+          <div class="ai-actions">
+            <form method="post" action="/ai/runbook/run">
+              <input type="hidden" name="q" value="{{.Search}}" />
+              <input type="hidden" name="steps" value="{{.AIStepsEncoded}}" />
+              <button class="btn btn-primary" type="submit" data-loading="Running AI steps…"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5v14l11-7z"/></svg> Run all now</button>
+            </form>
+            <form method="post" action="/ai/runbook/save" class="save-form">
+              <input type="hidden" name="steps" value="{{.AIStepsEncoded}}" />
+              <input class="fld" name="name" value="{{.AIStepsTitle}}" placeholder="Runbook name" />
+              <button class="btn" type="submit" data-loading="Saving runbook…"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg> Save as Runbook</button>
+            </form>
+          </div>
+        </div>
+        {{end}}
       </div>
     </section>
     {{end}}
