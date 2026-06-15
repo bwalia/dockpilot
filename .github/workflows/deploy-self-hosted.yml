@@ -1,0 +1,174 @@
+name: Deploy DockPilot (Ring Promotion)
+
+# Builds the DockPilot binary once and promotes the SAME artifact through rings:
+#
+#   Ring 1: INT  (slworker00, label: int)  -> smoke test
+#   Ring 2: TEST (debian001,  label: test) -> smoke test   [only if INT passes]
+#
+# Gating:
+#   - Auto-runs only after the "CI" workflow succeeds on main (tests must pass).
+#   - The needs: chain enforces promotion — TEST is skipped unless INT smoke passes.
+#   - Can also be run manually via workflow_dispatch.
+#
+# Requirements on each runner (already satisfied):
+#   - self-hosted Linux x64 runner labelled `int` / `test`, running as a user with
+#     passwordless sudo and docker group membership.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-dockpilot
+  cancel-in-progress: false
+
+jobs:
+  # ── Build once on a GitHub-hosted runner (runners have no Go on TEST) ──
+  build:
+    name: Build binary
+    # Only proceed if triggered manually OR the gating CI run succeeded.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (the commit that passed CI)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+
+      - name: Build linux/amd64 binary
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags="-s -w" -o dockpilot .
+          ./dockpilot --help >/dev/null 2>&1 || true
+          file dockpilot || true
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dockpilot-binary
+          path: dockpilot
+          retention-days: 7
+
+  # ── Ring 1: INT ──
+  deploy-int:
+    name: "Ring 1 · Deploy INT (slworker00)"
+    needs: build
+    runs-on: [self-hosted, int]
+    steps:
+      - name: Checkout (deploy scripts)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+
+      - name: Download binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dockpilot-binary
+          path: ./dist
+
+      - name: Install & restart service
+        run: |
+          chmod +x deploy/install-dockpilot.sh
+          deploy/install-dockpilot.sh int "$GITHUB_WORKSPACE/dist/dockpilot"
+        shell: bash
+
+  smoke-int:
+    name: "Ring 1 · Smoke test INT"
+    needs: deploy-int
+    runs-on: [self-hosted, int]
+    steps:
+      - name: Health check (:8090)
+        run: |
+          ok=false
+          for i in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8090/ || true)
+            # 401 = auth gate up, 200 = open. Either means the server is serving.
+            if [ "$code" = "401" ] || [ "$code" = "200" ]; then
+              echo "INT healthy on attempt $i (HTTP $code)"; ok=true; break
+            fi
+            echo "attempt $i: HTTP $code — retrying in 3s"; sleep 3
+          done
+          if [ "$ok" != "true" ]; then
+            echo "ERROR: INT health check failed"
+            sudo journalctl -u dockpilot --no-pager -n 40 || true
+            exit 1
+          fi
+        shell: bash
+
+  # ── Ring 2: TEST (only promoted if INT smoke passes) ──
+  deploy-test:
+    name: "Ring 2 · Deploy TEST (debian001)"
+    needs: smoke-int
+    runs-on: [self-hosted, test]
+    steps:
+      - name: Checkout (deploy scripts)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+
+      - name: Download binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dockpilot-binary
+          path: ./dist
+
+      - name: Install & restart service
+        run: |
+          chmod +x deploy/install-dockpilot.sh
+          deploy/install-dockpilot.sh test "$GITHUB_WORKSPACE/dist/dockpilot"
+        shell: bash
+
+  smoke-test:
+    name: "Ring 2 · Smoke test TEST"
+    needs: deploy-test
+    runs-on: [self-hosted, test]
+    steps:
+      - name: Health check (:8090)
+        run: |
+          ok=false
+          for i in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8090/ || true)
+            if [ "$code" = "401" ] || [ "$code" = "200" ]; then
+              echo "TEST healthy on attempt $i (HTTP $code)"; ok=true; break
+            fi
+            echo "attempt $i: HTTP $code — retrying in 3s"; sleep 3
+          done
+          if [ "$ok" != "true" ]; then
+            echo "ERROR: TEST health check failed"
+            sudo journalctl -u dockpilot --no-pager -n 40 || true
+            exit 1
+          fi
+        shell: bash
+
+  summary:
+    name: Deployment Summary
+    needs: [build, deploy-int, smoke-int, deploy-test, smoke-test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report
+        run: |
+          echo "=================================================="
+          echo "        DockPilot Ring-Promotion Summary"
+          echo "=================================================="
+          echo "Trigger:  ${{ github.event_name }}"
+          echo "Commit:   ${{ github.event.workflow_run.head_sha || github.sha }}"
+          echo "--------------------------------------------------"
+          echo "Build              | ${{ needs.build.result }}"
+          echo "Ring 1 Deploy INT  | ${{ needs.deploy-int.result }}"
+          echo "Ring 1 Smoke  INT  | ${{ needs.smoke-int.result }}"
+          echo "Ring 2 Deploy TEST | ${{ needs.deploy-test.result }}"
+          echo "Ring 2 Smoke  TEST | ${{ needs.smoke-test.result }}"
+          echo "=================================================="
