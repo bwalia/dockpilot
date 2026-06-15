@@ -51,8 +51,9 @@ jobs:
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
             go build -trimpath -ldflags="-s -w" -o dockpilot .
-          ./dockpilot --help >/dev/null 2>&1 || true
-          file dockpilot || true
+          # NB: do NOT execute the binary here — dockpilot starts a blocking HTTP
+          # server (no --help/version flag), which would hang the build step.
+          test -x dockpilot && file dockpilot
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
