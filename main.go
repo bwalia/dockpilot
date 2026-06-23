@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"html/template"
 	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -320,6 +322,12 @@ func main() {
 	mux.HandleFunc("/volumes/action", func(w http.ResponseWriter, r *http.Request) { app.handleResourceAction("volumes", w, r) })
 	mux.HandleFunc("/networks", app.handleNetworks)
 	mux.HandleFunc("/networks/action", func(w http.ResponseWriter, r *http.Request) { app.handleResourceAction("networks", w, r) })
+	mux.HandleFunc("/stacks", app.handleStacks)
+	mux.HandleFunc("/stacks/action", app.handleStacksAction)
+	mux.HandleFunc("/terminal", app.handleTerminalPage)
+	mux.HandleFunc("/containers/exec/ws", app.handleExecWS)
+	mux.HandleFunc("/logs", app.handleLogsPage)
+	mux.HandleFunc("/containers/logs/stream", app.handleLogStream)
 	mux.HandleFunc("/runbooks", app.handleRunbooks)
 	mux.HandleFunc("/runbooks/execute", app.handleRunbookExecute)
 	mux.HandleFunc("/runbooks/analyze", app.handleRunbookAnalyze)
@@ -438,6 +446,20 @@ func (s *statusRecorder) Flush() {
 	if f, ok := s.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// Hijack forwards to the underlying connection so the WebSocket terminal and the
+// SSE log stream — both of which take over the raw socket — keep working through
+// this logging wrapper.
+func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := s.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("underlying ResponseWriter does not support hijacking")
+	}
+	if s.status == 0 {
+		s.status = http.StatusSwitchingProtocols
+	}
+	return hj.Hijack()
 }
 
 func withLogging(m *metrics, next http.Handler) http.Handler {
@@ -3171,6 +3193,7 @@ const indexHTML = `<!doctype html>
       </div>
       <nav class="nav-links">
         <a href="/" class="active"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg><span>Dashboard</span></a>
+        <a href="/stacks"><svg viewBox="0 0 24 24"><path d="M12 2l9 5-9 5-9-5z"/><path d="M3 12l9 5 9-5"/><path d="M3 17l9 5 9-5"/></svg><span>Stacks</span></a>
         <a href="/images"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg><span>Images</span></a>
         <a href="/volumes"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg><span>Volumes</span></a>
         <a href="/networks"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 12h6"/><path d="M13 12l4-5"/><path d="M13 12l4 5"/></svg><span>Networks</span></a>
@@ -3313,6 +3336,8 @@ const indexHTML = `<!doctype html>
                       <form method="post" action="/containers/{{.ID}}/analyze"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-ai tip" type="submit" data-tip="Analyze with AI" aria-label="Analyze {{.Name}} with AI" data-loading="Analyzing container with AI… (this can take a while)"><svg viewBox="0 0 24 24"><path d="M12 3l1.9 4.6L18 9l-4.1 1.4L12 15l-1.9-4.6L6 9l4.1-1.4z"/><path d="M5 18l.9 2.2L8 21l-2.1.8L5 24l-.9-2.2L2 21l2.1-.8z"/></svg></button></form>
                       <form method="post" action="/containers/{{.ID}}/inspect"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-info tip" type="submit" data-tip="Inspect" aria-label="Inspect {{.Name}}"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.35-4.35"/></svg></button></form>
                       <form method="post" action="/containers/{{.ID}}/logs"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-logs tip" type="submit" data-tip="Logs" aria-label="Logs {{.Name}}"><svg viewBox="0 0 24 24"><path d="M5 4h14v16H5z"/><path d="M8 8h8"/><path d="M8 12h8"/><path d="M8 16h6"/></svg></button></form>
+                      <a class="btn-icon ic-logs tip" href="/logs?id={{.ID}}" target="_blank" rel="noopener" data-tip="Live logs" aria-label="Live logs {{.Name}}"><svg viewBox="0 0 24 24"><path d="M3 12h4l2 6 4-12 2 6h6"/></svg></a>
+                      <a class="btn-icon ic-info tip" href="/terminal?id={{.ID}}" target="_blank" rel="noopener" data-tip="Terminal" aria-label="Terminal {{.Name}}"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="M7 9l3 3-3 3"/><path d="M12 15h5"/></svg></a>
                       <form method="post" action="/containers/{{.ID}}/remove" onsubmit="return confirm('Remove container {{.Name}}?')"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-remove tip" type="submit" data-tip="Remove" aria-label="Remove {{.Name}}"><svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M7 6l1 14h8l1-14"/></svg></button></form>
                     </div>
                   </td>
