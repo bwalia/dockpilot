@@ -24,6 +24,7 @@ type App struct {
 	tmpl         *template.Template
 	ipamTmpl     *template.Template
 	runbooksTmpl *template.Template
+	resourceTmpl *template.Template
 
 	// cache holds the expensive, slowly-changing host metrics (per-container
 	// `docker stats` and host CPU/mem/disk usage) so they never block a page
@@ -296,6 +297,7 @@ func main() {
 		tmpl:         template.Must(template.New("index").Parse(indexHTML)),
 		ipamTmpl:     template.Must(template.New("ipam").Funcs(funcMap).Parse(ipamHTML)),
 		runbooksTmpl: template.Must(template.New("runbooks").Funcs(funcMap).Parse(runbooksHTML)),
+		resourceTmpl: template.Must(template.New("resource").Funcs(funcMap).Parse(resourceHTML)),
 		cache:        newStatsCache(),
 		metrics:      &metrics{startedAtUnix: time.Now().Unix()},
 	}
@@ -312,6 +314,12 @@ func main() {
 	mux.HandleFunc("/landing", app.handleLanding)
 	mux.HandleFunc("/ipam", app.handleIPAM)
 	mux.HandleFunc("/ipam/analyze", app.handleIPAMAnalyze)
+	mux.HandleFunc("/images", app.handleImages)
+	mux.HandleFunc("/images/action", func(w http.ResponseWriter, r *http.Request) { app.handleResourceAction("images", w, r) })
+	mux.HandleFunc("/volumes", app.handleVolumes)
+	mux.HandleFunc("/volumes/action", func(w http.ResponseWriter, r *http.Request) { app.handleResourceAction("volumes", w, r) })
+	mux.HandleFunc("/networks", app.handleNetworks)
+	mux.HandleFunc("/networks/action", func(w http.ResponseWriter, r *http.Request) { app.handleResourceAction("networks", w, r) })
 	mux.HandleFunc("/runbooks", app.handleRunbooks)
 	mux.HandleFunc("/runbooks/execute", app.handleRunbookExecute)
 	mux.HandleFunc("/runbooks/analyze", app.handleRunbookAnalyze)
@@ -3163,6 +3171,9 @@ const indexHTML = `<!doctype html>
       </div>
       <nav class="nav-links">
         <a href="/" class="active"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg><span>Dashboard</span></a>
+        <a href="/images"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg><span>Images</span></a>
+        <a href="/volumes"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg><span>Volumes</span></a>
+        <a href="/networks"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 12h6"/><path d="M13 12l4-5"/><path d="M13 12l4 5"/></svg><span>Networks</span></a>
         <a href="/ipam"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span>IPAM</span></a>
         <a href="/runbooks"><svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg><span>Runbooks</span></a>
         <a href="/landing"><svg viewBox="0 0 24 24"><path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 0 0 1 1h3m10-11l2 2m-2-2v10a1 1 0 0 1-1 1h-3"/></svg><span>About</span></a>
