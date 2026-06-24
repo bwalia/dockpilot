@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -96,6 +97,16 @@ func allowedHosts(r *http.Request) map[string]struct{} {
 	if r.Host != "" {
 		hosts[strings.ToLower(r.Host)] = struct{}{}
 	}
+	// Behind a reverse proxy the browser's Origin reflects the public host,
+	// which the proxy forwards as X-Forwarded-Host while r.Host is the internal
+	// upstream address. Trust it so same-origin posts aren't rejected in prod.
+	if xfh := r.Header.Get("X-Forwarded-Host"); xfh != "" {
+		for _, h := range strings.Split(xfh, ",") {
+			if h = strings.TrimSpace(h); h != "" {
+				hosts[strings.ToLower(h)] = struct{}{}
+			}
+		}
+	}
 	for _, raw := range strings.Split(os.Getenv("TRUSTED_ORIGINS"), ",") {
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
@@ -155,7 +166,7 @@ func csrfProtect(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			csrfReject(w, "origin not allowed")
+			csrfReject(w, r, "origin not allowed")
 			return
 		}
 
@@ -166,7 +177,7 @@ func csrfProtect(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			csrfReject(w, "referer not allowed")
+			csrfReject(w, r, "referer not allowed")
 			return
 		}
 
@@ -176,12 +187,18 @@ func csrfProtect(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		csrfReject(w, "missing origin/referer and CSRF token")
+		csrfReject(w, r, "missing origin/referer and CSRF token")
 	})
 }
 
-// csrfReject writes a uniform 403 for blocked state-changing requests.
-func csrfReject(w http.ResponseWriter, reason string) {
+// csrfReject writes a uniform 403 for blocked state-changing requests and logs
+// the headers that drove the decision so multi-homing/proxy mismatches can be
+// diagnosed from the server log.
+func csrfReject(w http.ResponseWriter, r *http.Request, reason string) {
+	log.Printf("csrf reject: reason=%q method=%s path=%s host=%q origin=%q referer=%q xfh=%q xfproto=%q",
+		reason, r.Method, r.URL.Path, r.Host,
+		r.Header.Get("Origin"), r.Header.Get("Referer"),
+		r.Header.Get("X-Forwarded-Host"), r.Header.Get("X-Forwarded-Proto"))
 	http.Error(w, "forbidden: CSRF check failed ("+reason+")", http.StatusForbidden)
 }
 
@@ -204,7 +221,11 @@ func secureHeaders(next http.Handler) http.Handler {
 		h := w.Header()
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("Referrer-Policy", "no-referrer")
+		// "same-origin" (not "no-referrer"): no-referrer makes browsers send
+		// Origin: null on same-origin form POSTs, which would trip our own CSRF
+		// origin check. "same-origin" keeps the real Origin/Referer for our
+		// same-origin forms while still leaking nothing to cross-origin targets.
+		h.Set("Referrer-Policy", "same-origin")
 		h.Set("Content-Security-Policy", csp)
 		next.ServeHTTP(w, r)
 	})
