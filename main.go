@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"html/template"
 	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -23,6 +26,105 @@ type App struct {
 	tmpl         *template.Template
 	ipamTmpl     *template.Template
 	runbooksTmpl *template.Template
+	resourceTmpl *template.Template
+
+	// cache holds the expensive, slowly-changing host metrics (per-container
+	// `docker stats` and host CPU/mem/disk usage) so they never block a page
+	// request. A background goroutine refreshes it on a ticker; requests only
+	// ever read from RAM.
+	cache   *statsCache
+	metrics *metrics
+}
+
+// hostInfo holds the slowly-changing, expensive-to-collect host facts. On this
+// class of host `docker system df` alone can take 15s+, so these are refreshed
+// on a much slower cadence than per-container stats.
+type hostInfo struct {
+	cpuCores  int
+	memTotal  int64
+	diskUsed  int64
+	diskTotal int64
+}
+
+// statsCache is a warm, mutex-guarded snapshot of the costly Docker metrics.
+// `docker stats --no-stream` (~2s) and `docker system df` (~15s) are collected
+// off the request path by background goroutines so page loads only read RAM.
+type statsCache struct {
+	mu          sync.RWMutex
+	stats       map[string]containerStat
+	images      int
+	usage       HostUsage
+	collectedAt time.Time
+	collectMS   int64
+	collectErr  string
+	ready       bool
+
+	host   hostInfo
+	hostAt time.Time
+}
+
+func newStatsCache() *statsCache {
+	return &statsCache{stats: map[string]containerStat{}}
+}
+
+func (c *statsCache) read() (map[string]containerStat, HostUsage, int, time.Time) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.stats, c.usage, c.images, c.collectedAt
+}
+
+func (c *statsCache) usageSnapshot() HostUsage {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.usage
+}
+
+func (c *statsCache) store(stats map[string]containerStat, images int, usage HostUsage, took time.Duration, collectErr string, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.stats = stats
+	c.images = images
+	c.usage = usage
+	c.collectMS = took.Milliseconds()
+	c.collectErr = collectErr
+	c.collectedAt = now
+	c.ready = true
+}
+
+func (c *statsCache) hostSnapshot() (hostInfo, time.Duration) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.hostAt.IsZero() {
+		return c.host, time.Duration(1<<62 - 1) // effectively "infinitely stale"
+	}
+	return c.host, time.Since(c.hostAt)
+}
+
+func (c *statsCache) storeHost(h hostInfo, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.host = h
+	c.hostAt = now
+}
+
+func (c *statsCache) snapshot() (ageMS, collectMS int64, ready bool, collectErr string) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.collectedAt.IsZero() {
+		return 0, c.collectMS, c.ready, c.collectErr
+	}
+	return time.Since(c.collectedAt).Milliseconds(), c.collectMS, c.ready, c.collectErr
+}
+
+// metrics holds process-wide counters exposed at /metrics in Prometheus text
+// format and summarised at /healthz.
+type metrics struct {
+	requestsTotal int64
+	errorsTotal   int64
+	collectsTotal int64
+	collectErrors int64
+	requestNanos  int64 // cumulative handler latency, for an avg
+	startedAtUnix int64
 }
 
 type RunbookStep struct {
@@ -41,12 +143,12 @@ type Runbook struct {
 }
 
 type RunbookStepResult struct {
-	Index     int
-	Label     string
-	Command   string
-	Output    string
-	Err       string
-	Executed  bool
+	Index    int
+	Label    string
+	Command  string
+	Output   string
+	Err      string
+	Executed bool
 }
 
 type RunbookView struct {
@@ -56,15 +158,15 @@ type RunbookView struct {
 }
 
 type RunbooksData struct {
-	Runbooks    []RunbookView
-	Selected    *RunbookView
-	Now         string
-	DockerHost  string
-	Success     string
-	Error       string
-	AIModel     string
-	AIAnalysis  string
-	Proposal    *RunbookProposal
+	Runbooks   []RunbookView
+	Selected   *RunbookView
+	Now        string
+	DockerHost string
+	Success    string
+	Error      string
+	AIModel    string
+	AIAnalysis string
+	Proposal   *RunbookProposal
 }
 
 // RunbookProposal holds an AI-generated set of replacement steps for a runbook,
@@ -127,21 +229,21 @@ type ContainerView struct {
 }
 
 type HostUsage struct {
-	CPUPercent    float64
-	CPUCores      int
-	MemUsedBytes  int64
-	MemTotalBytes int64
-	MemPercent    float64
-	DiskUsedBytes int64
+	CPUPercent     float64
+	CPUCores       int
+	MemUsedBytes   int64
+	MemTotalBytes  int64
+	MemPercent     float64
+	DiskUsedBytes  int64
 	DiskTotalBytes int64
-	DiskPercent   float64
-	CPUUsedLabel  string
-	CPUTotalLabel string
-	MemUsedLabel  string
-	MemTotalLabel string
-	DiskUsedLabel string
+	DiskPercent    float64
+	CPUUsedLabel   string
+	CPUTotalLabel  string
+	MemUsedLabel   string
+	MemTotalLabel  string
+	DiskUsedLabel  string
 	DiskTotalLabel string
-	Error         string
+	Error          string
 }
 
 type PortMapping struct {
@@ -197,6 +299,9 @@ func main() {
 		tmpl:         template.Must(template.New("index").Parse(indexHTML)),
 		ipamTmpl:     template.Must(template.New("ipam").Funcs(funcMap).Parse(ipamHTML)),
 		runbooksTmpl: template.Must(template.New("runbooks").Funcs(funcMap).Parse(runbooksHTML)),
+		resourceTmpl: template.Must(template.New("resource").Funcs(funcMap).Parse(resourceHTML)),
+		cache:        newStatsCache(),
+		metrics:      &metrics{startedAtUnix: time.Now().Unix()},
 	}
 
 	if err := loadUserRunbooks(); err != nil {
@@ -211,6 +316,18 @@ func main() {
 	mux.HandleFunc("/landing", app.handleLanding)
 	mux.HandleFunc("/ipam", app.handleIPAM)
 	mux.HandleFunc("/ipam/analyze", app.handleIPAMAnalyze)
+	mux.HandleFunc("/images", app.handleImages)
+	mux.HandleFunc("/images/action", func(w http.ResponseWriter, r *http.Request) { app.handleResourceAction("images", w, r) })
+	mux.HandleFunc("/volumes", app.handleVolumes)
+	mux.HandleFunc("/volumes/action", func(w http.ResponseWriter, r *http.Request) { app.handleResourceAction("volumes", w, r) })
+	mux.HandleFunc("/networks", app.handleNetworks)
+	mux.HandleFunc("/networks/action", func(w http.ResponseWriter, r *http.Request) { app.handleResourceAction("networks", w, r) })
+	mux.HandleFunc("/stacks", app.handleStacks)
+	mux.HandleFunc("/stacks/action", app.handleStacksAction)
+	mux.HandleFunc("/terminal", app.handleTerminalPage)
+	mux.HandleFunc("/containers/exec/ws", app.handleExecWS)
+	mux.HandleFunc("/logs", app.handleLogsPage)
+	mux.HandleFunc("/containers/logs/stream", app.handleLogStream)
 	mux.HandleFunc("/runbooks", app.handleRunbooks)
 	mux.HandleFunc("/runbooks/execute", app.handleRunbookExecute)
 	mux.HandleFunc("/runbooks/analyze", app.handleRunbookAnalyze)
@@ -223,14 +340,39 @@ func main() {
 	mux.HandleFunc("/ai/runbook/save", app.handleAIRunbookSave)
 	mux.HandleFunc("/containers/create", app.handleCreate)
 	mux.HandleFunc("/containers/", app.handleContainerAction)
+	mux.HandleFunc("/api/dashboard.json", app.handleDashboardAPI)
+	mux.HandleFunc("/healthz", app.handleHealthz)
+	mux.HandleFunc("/metrics", app.handleMetrics)
+
+	// Continuously refresh the warm caches so page requests never pay the cost
+	// of `docker stats` (~2s) or `docker system df` (can be 15s+). Host facts
+	// change slowly, so they refresh on a much longer cadence than live stats.
+	refreshInterval := envDurationOrDefault("STATS_REFRESH_INTERVAL", 3*time.Second)
+	hostInterval := envDurationOrDefault("HOST_REFRESH_INTERVAL", 60*time.Second)
+	app.startStatsCollector(refreshInterval, hostInterval)
 
 	addr := envOrDefault("ADDR", ":8090")
-	log.Printf("dockpilot listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, app.withBasicAuth(withLogging(mux))))
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           secureHeaders(app.withBasicAuth(csrfProtect(withLogging(app.metrics, mux)))),
+		ReadHeaderTimeout: 10 * time.Second,
+		// Generous write timeout: long enough for slow AI/runbook operations
+		// (each Docker step is itself capped at 30s) but bounds hung sockets.
+		WriteTimeout: 300 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+	log.Printf("dockpilot listening on %s (stats every %s, host facts every %s)", addr, refreshInterval, hostInterval)
+	log.Fatal(srv.ListenAndServe())
 }
 
 func (a *App) withBasicAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Monitoring probes must be scrapeable without credentials.
+		if r.URL.Path == "/healthz" || r.URL.Path == "/metrics" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		user, pass, ok := r.BasicAuth()
 		expectedUser, expectedPass, err := readAuthFile(envOrDefault("AUTH_FILE", "./dockpilot.auth"))
 		if err != nil {
@@ -280,12 +422,85 @@ func readAuthFile(path string) (string, string, error) {
 	return "", "", fmt.Errorf("auth file must contain 'username:password'")
 }
 
-func withLogging(next http.Handler) http.Handler {
+// statusRecorder captures the response status code so the logging middleware
+// can report it and count server errors for /metrics.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	return s.ResponseWriter.Write(b)
+}
+
+// Flush exposes the underlying flusher so streaming responses keep working.
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack forwards to the underlying connection so the WebSocket terminal and the
+// SSE log stream — both of which take over the raw socket — keep working through
+// this logging wrapper.
+func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := s.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("underlying ResponseWriter does not support hijacking")
+	}
+	if s.status == 0 {
+		s.status = http.StatusSwitchingProtocols
+	}
+	return hj.Hijack()
+}
+
+func withLogging(m *metrics, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
+		rec := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(rec, r)
+		dur := time.Since(start)
+		if rec.status == 0 {
+			rec.status = http.StatusOK
+		}
+
+		if m != nil {
+			atomic.AddInt64(&m.requestsTotal, 1)
+			atomic.AddInt64(&m.requestNanos, dur.Nanoseconds())
+			if rec.status >= 500 {
+				atomic.AddInt64(&m.errorsTotal, 1)
+			}
+		}
+
+		// Structured, key=value log line — greppable and easy to ship to a
+		// log pipeline.
+		log.Printf("method=%s path=%s status=%d dur=%s remote=%s",
+			r.Method, r.URL.Path, rec.status, dur.Round(time.Millisecond), clientIP(r))
 	})
+}
+
+// clientIP extracts the best-effort client address, honouring a reverse proxy's
+// X-Forwarded-For header (DockPilot runs behind one in production).
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if i := strings.IndexByte(xff, ','); i >= 0 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return strings.TrimSpace(xff)
+	}
+	host := r.RemoteAddr
+	if i := strings.LastIndexByte(host, ':'); i >= 0 {
+		host = host[:i]
+	}
+	return host
 }
 
 func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
@@ -297,7 +512,7 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	search := strings.TrimSpace(r.URL.Query().Get("q"))
 	d, err := a.buildDashboardData(search)
 	if err != nil {
-		a.render(w, PageData{Error: err.Error(), Usage: buildHostUsage(nil, nil)})
+		a.render(w, PageData{Error: err.Error(), Usage: a.cache.usageSnapshot()})
 		return
 	}
 
@@ -1172,12 +1387,17 @@ func (a *App) handleAIInterpret(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) buildDashboardData(search string) (PageData, error) {
 
-	containers, err := listContainers()
-	if err != nil {
-		return PageData{}, err
+	// Only the container list is fetched fresh on the request path: `docker ps`
+	// is fast (~100ms) and must reflect start/stop/remove actions immediately.
+	// Everything expensive — per-container stats (~2s), the image count (~2.6s)
+	// and host usage (`docker system df` ~15s) — comes from the warm background
+	// cache, keeping page loads well under ~300ms.
+	containers, listErr := listContainers()
+	if listErr != nil {
+		return PageData{}, listErr
 	}
 
-	stats := collectContainerStats()
+	stats, usage, images, _ := a.cache.read()
 	for i := range containers {
 		if s, ok := stats[containers[i].ID]; ok {
 			containers[i].CPUPerc = s.cpuPerc
@@ -1185,8 +1405,6 @@ func (a *App) buildDashboardData(search string) (PageData, error) {
 			containers[i].MemPerc = s.memPerc
 		}
 	}
-
-	usage := buildHostUsage(containers, stats)
 
 	if search != "" {
 		containers = filterContainers(containers, search)
@@ -1211,7 +1429,7 @@ func (a *App) buildDashboardData(search string) (PageData, error) {
 		Total:         len(containers),
 		Running:       running,
 		Stopped:       stopped,
-		Images:        countImages(),
+		Images:        images,
 		Usage:         usage,
 		Search:        search,
 		CommandInput:  "",
@@ -1223,6 +1441,232 @@ func (a *App) buildDashboardData(search string) (PageData, error) {
 		Now:           time.Now().Format("2006-01-02 15:04:05"),
 		DockerHost:    envOrDefault("DOCKER_HOST", "unix:///var/run/docker.sock"),
 	}, nil
+}
+
+// startStatsCollector launches two background loops and returns immediately, so
+// the HTTP server never blocks on slow Docker calls at startup. The first page
+// load may briefly show "—" for live metrics until the first cycle completes.
+//
+//   - the fast loop refreshes per-container stats (CPU/mem, ~2s) on `interval`
+//   - the slow loop refreshes host facts (`docker system df`, ~15s) on a much
+//     longer cadence, since disk/CPU-core/mem-total change slowly
+func (a *App) startStatsCollector(interval, hostInterval time.Duration) {
+	// Prime the slow host info once, up front, in the background.
+	go func() {
+		a.refreshHostInfo()
+		t := time.NewTicker(hostInterval)
+		defer t.Stop()
+		for range t.C {
+			a.refreshHostInfo()
+		}
+	}()
+
+	// Fast stats loop. A self-paced sleep (rather than a Ticker) prevents
+	// overlapping collections when the daemon is briefly slow.
+	go func() {
+		for {
+			a.refreshStats()
+			time.Sleep(interval)
+		}
+	}()
+}
+
+// refreshStats collects per-container stats and recomputes host usage from the
+// cached (slowly-refreshed) host facts. Called only by the background collector.
+func (a *App) refreshStats() {
+	start := time.Now()
+	atomic.AddInt64(&a.metrics.collectsTotal, 1)
+
+	// `docker stats` (~2s) and `docker images` (~2.6s) are both slow and both
+	// change slowly relative to a page view, so collect them together off-path.
+	var (
+		stats  map[string]containerStat
+		images int
+		wg     sync.WaitGroup
+	)
+	wg.Add(2)
+	go func() { defer wg.Done(); stats = collectContainerStats() }()
+	go func() { defer wg.Done(); images = countImages() }()
+	wg.Wait()
+
+	collectErr := ""
+	if len(stats) == 0 {
+		collectErr = "no stats sampled (daemon may be slow or no running containers)"
+		atomic.AddInt64(&a.metrics.collectErrors, 1)
+	}
+
+	host, _ := a.cache.hostSnapshot()
+	usage := computeHostUsage(stats, host)
+	a.cache.store(stats, images, usage, time.Since(start), collectErr, start)
+}
+
+// refreshHostInfo runs the three expensive host-level Docker queries
+// (`docker info` ×2 and `docker system df`) and caches the result.
+func (a *App) refreshHostInfo() {
+	h := collectHostInfo()
+	a.cache.storeHost(h, time.Now())
+	// Recompute usage immediately so the new disk/cpu/mem totals are reflected
+	// without waiting for the next stats cycle.
+	stats, _, _, _ := a.cache.read()
+	usage := computeHostUsage(stats, h)
+	a.cache.mu.Lock()
+	a.cache.usage = usage
+	a.cache.mu.Unlock()
+}
+
+// dashboardAPIResponse is the JSON contract polled by the dashboard to hydrate
+// live metrics without a full-page reload.
+type dashboardAPIResponse struct {
+	Total       int                     `json:"total"`
+	Running     int                     `json:"running"`
+	Stopped     int                     `json:"stopped"`
+	Images      int                     `json:"images"`
+	Containers  []dashboardAPIContainer `json:"containers"`
+	Usage       dashboardAPIUsage       `json:"usage"`
+	CollectedAt string                  `json:"collectedAt"`
+	CacheAgeMS  int64                   `json:"cacheAgeMs"`
+	Now         string                  `json:"now"`
+}
+
+type dashboardAPIContainer struct {
+	ID      string `json:"id"`
+	State   string `json:"state"`
+	Status  string `json:"status"`
+	CPU     string `json:"cpu"`
+	Mem     string `json:"mem"`
+	MemPerc string `json:"memPerc"`
+}
+
+type dashboardAPIUsage struct {
+	CPUPercent  float64 `json:"cpuPercent"`
+	CPUUsed     string  `json:"cpuUsed"`
+	CPUTotal    string  `json:"cpuTotal"`
+	MemPercent  float64 `json:"memPercent"`
+	MemUsed     string  `json:"memUsed"`
+	MemTotal    string  `json:"memTotal"`
+	DiskPercent float64 `json:"diskPercent"`
+	DiskUsed    string  `json:"diskUsed"`
+}
+
+// handleDashboardAPI returns the live container metrics as JSON. The dashboard
+// page polls it on an interval so CPU/memory cells and gauges stay current
+// without reloading the whole document.
+func (a *App) handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
+	search := strings.TrimSpace(r.URL.Query().Get("q"))
+	d, err := a.buildDashboardData(search)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	ageMS, _, _, _ := a.cache.snapshot()
+	resp := dashboardAPIResponse{
+		Total:       d.Total,
+		Running:     d.Running,
+		Stopped:     d.Stopped,
+		Images:      d.Images,
+		CollectedAt: d.Now,
+		CacheAgeMS:  ageMS,
+		Now:         d.Now,
+		Usage: dashboardAPIUsage{
+			CPUPercent:  d.Usage.CPUPercent,
+			CPUUsed:     d.Usage.CPUUsedLabel,
+			CPUTotal:    d.Usage.CPUTotalLabel,
+			MemPercent:  d.Usage.MemPercent,
+			MemUsed:     d.Usage.MemUsedLabel,
+			MemTotal:    d.Usage.MemTotalLabel,
+			DiskPercent: d.Usage.DiskPercent,
+			DiskUsed:    d.Usage.DiskUsedLabel,
+		},
+	}
+	resp.Containers = make([]dashboardAPIContainer, 0, len(d.Containers))
+	for _, c := range d.Containers {
+		resp.Containers = append(resp.Containers, dashboardAPIContainer{
+			ID: c.ID, State: c.State, Status: c.Status,
+			CPU: c.CPUPerc, Mem: c.MemUsage, MemPerc: c.MemPerc,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handleHealthz is a lightweight liveness/readiness probe. It reports whether
+// the stats cache has been primed and how stale it is.
+func (a *App) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	ageMS, collectMS, ready, collectErr := a.cache.snapshot()
+	status := "ok"
+	code := http.StatusOK
+	if !ready {
+		status = "starting"
+		code = http.StatusServiceUnavailable
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":           status,
+		"cacheReady":       ready,
+		"cacheAgeMs":       ageMS,
+		"lastCollectMs":    collectMS,
+		"lastCollectError": collectErr,
+		"now":              time.Now().Format(time.RFC3339),
+	})
+}
+
+// handleMetrics exposes process counters in Prometheus text exposition format.
+func (a *App) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	reqs := atomic.LoadInt64(&a.metrics.requestsTotal)
+	errs := atomic.LoadInt64(&a.metrics.errorsTotal)
+	collects := atomic.LoadInt64(&a.metrics.collectsTotal)
+	collectErrs := atomic.LoadInt64(&a.metrics.collectErrors)
+	reqNanos := atomic.LoadInt64(&a.metrics.requestNanos)
+	ageMS, collectMS, _, _ := a.cache.snapshot()
+	uptime := time.Now().Unix() - atomic.LoadInt64(&a.metrics.startedAtUnix)
+
+	avgMS := float64(0)
+	if reqs > 0 {
+		avgMS = float64(reqNanos) / float64(reqs) / 1e6
+	}
+
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	fmt.Fprintf(w, "# HELP dockpilot_http_requests_total Total HTTP requests served.\n")
+	fmt.Fprintf(w, "# TYPE dockpilot_http_requests_total counter\n")
+	fmt.Fprintf(w, "dockpilot_http_requests_total %d\n", reqs)
+	fmt.Fprintf(w, "# HELP dockpilot_http_errors_total HTTP responses with status >= 500.\n")
+	fmt.Fprintf(w, "# TYPE dockpilot_http_errors_total counter\n")
+	fmt.Fprintf(w, "dockpilot_http_errors_total %d\n", errs)
+	fmt.Fprintf(w, "# HELP dockpilot_http_request_duration_avg_ms Average handler latency in milliseconds.\n")
+	fmt.Fprintf(w, "# TYPE dockpilot_http_request_duration_avg_ms gauge\n")
+	fmt.Fprintf(w, "dockpilot_http_request_duration_avg_ms %.3f\n", avgMS)
+	fmt.Fprintf(w, "# HELP dockpilot_stats_collections_total Background stats refresh cycles.\n")
+	fmt.Fprintf(w, "# TYPE dockpilot_stats_collections_total counter\n")
+	fmt.Fprintf(w, "dockpilot_stats_collections_total %d\n", collects)
+	fmt.Fprintf(w, "# HELP dockpilot_stats_collection_errors_total Background stats refresh failures.\n")
+	fmt.Fprintf(w, "# TYPE dockpilot_stats_collection_errors_total counter\n")
+	fmt.Fprintf(w, "dockpilot_stats_collection_errors_total %d\n", collectErrs)
+	fmt.Fprintf(w, "# HELP dockpilot_stats_cache_age_ms Age of the warm stats cache in milliseconds.\n")
+	fmt.Fprintf(w, "# TYPE dockpilot_stats_cache_age_ms gauge\n")
+	fmt.Fprintf(w, "dockpilot_stats_cache_age_ms %d\n", ageMS)
+	fmt.Fprintf(w, "# HELP dockpilot_stats_collection_duration_ms Duration of the last stats refresh.\n")
+	fmt.Fprintf(w, "# TYPE dockpilot_stats_collection_duration_ms gauge\n")
+	fmt.Fprintf(w, "dockpilot_stats_collection_duration_ms %d\n", collectMS)
+	fmt.Fprintf(w, "# HELP dockpilot_uptime_seconds Process uptime in seconds.\n")
+	fmt.Fprintf(w, "# TYPE dockpilot_uptime_seconds gauge\n")
+	fmt.Fprintf(w, "dockpilot_uptime_seconds %d\n", uptime)
+}
+
+// aiTimeout bounds an Ollama request. Local CPU inference must cold-load the
+// model (several GB) into memory on first use — that alone can take ~1 minute
+// before a single token is generated — then produce the full completion. The
+// old fixed 45s/90s caps were shorter than a cold start, so analyses failed
+// with "context deadline exceeded while awaiting headers". Default generously
+// and allow overriding via OLLAMA_TIMEOUT (e.g. "180s", "5m"). Keep it below
+// the server's 300s WriteTimeout so the handler can still write a response.
+func aiTimeout() time.Duration {
+	return envDurationOrDefault("OLLAMA_TIMEOUT", 240*time.Second)
 }
 
 func interpretDockerCommandWithOllama(userPrompt string) (AISuggestion, error) {
@@ -1263,7 +1707,7 @@ Rules:
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	client := &http.Client{Timeout: 45 * time.Second}
+	client := &http.Client{Timeout: aiTimeout()}
 	res, err := client.Do(req)
 	if err != nil {
 		return AISuggestion{}, err
@@ -1373,7 +1817,7 @@ func analyzeWithOllama(systemPrompt, userContent string) (string, error) {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	client := &http.Client{Timeout: 90 * time.Second}
+	client := &http.Client{Timeout: aiTimeout()}
 	res, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -1897,21 +2341,37 @@ func dockerSystemDFSize() (used, total int64) {
 	return used, total
 }
 
-func buildHostUsage(containers []ContainerView, stats map[string]containerStat) HostUsage {
+// collectHostInfo runs the three expensive host-level Docker queries in
+// parallel. Intended to be called only by the background collector.
+func collectHostInfo() hostInfo {
 	var (
-		cpuSum   float64
-		memSum   int64
+		h  hostInfo
+		wg sync.WaitGroup
 	)
-	for _, c := range containers {
-		if s, ok := stats[c.ID]; ok {
-			cpuSum += s.cpuFloat
-			memSum += s.memBytes
-		}
+	wg.Add(3)
+	go func() { defer wg.Done(); h.cpuCores = dockerInfoCPUs() }()
+	go func() { defer wg.Done(); h.memTotal = dockerInfoTotalMem() }()
+	go func() { defer wg.Done(); h.diskUsed, h.diskTotal = dockerSystemDFSize() }()
+	wg.Wait()
+	return h
+}
+
+// computeHostUsage derives the displayable host usage from the live per-container
+// stats and the cached host facts. It performs no Docker calls and is safe to run
+// on every refresh cycle.
+func computeHostUsage(stats map[string]containerStat, h hostInfo) HostUsage {
+	var (
+		cpuSum float64
+		memSum int64
+	)
+	for _, s := range stats {
+		cpuSum += s.cpuFloat
+		memSum += s.memBytes
 	}
 
-	cpus := dockerInfoCPUs()
-	memTotal := dockerInfoTotalMem()
-	diskUsed, diskTotal := dockerSystemDFSize()
+	cpus := h.cpuCores
+	memTotal := h.memTotal
+	diskUsed, diskTotal := h.diskUsed, h.diskTotal
 
 	cpuPercent := float64(0)
 	if cpus > 0 {
@@ -1952,13 +2412,22 @@ func buildHostUsage(containers []ContainerView, stats map[string]containerStat) 
 	}
 }
 
+// dockerCmdTimeout bounds every read-only Docker CLI call so a wedged daemon
+// can never hang a page request or the background collector forever.
+const dockerCmdTimeout = 25 * time.Second
+
 func runDocker(args ...string) (string, error) {
-	cmd := exec.Command("docker", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), dockerCmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", args...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("docker %s timed out after %s", strings.Join(args, " "), dockerCmdTimeout)
+	}
 	if err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
@@ -2014,6 +2483,22 @@ func envOrDefault(key, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+// envDurationOrDefault parses a duration env var (e.g. "3s", "500ms"). A bare
+// integer is treated as seconds. Falls back on empty or invalid input.
+func envDurationOrDefault(key string, fallback time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	if d, err := time.ParseDuration(v); err == nil && d > 0 {
+		return d
+	}
+	if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	return fallback
 }
 
 func shortID(id string) string {
@@ -2547,6 +3032,12 @@ const indexHTML = `<!doctype html>
     }
     .search-wrap input:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-glow); }
     .filter-hint { font-size:0.74rem; color:var(--muted); white-space:nowrap; }
+    .live-pill { display:inline-flex; align-items:center; gap:6px; font-size:0.7rem; font-weight:600; color:var(--muted); background:rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.18); border-radius:999px; padding:3px 9px; white-space:nowrap; }
+    .live-pill.stale { color:#fbbf24; background:rgba(245,158,11,0.08); border-color:rgba(245,158,11,0.25); }
+    .live-dot { width:7px; height:7px; border-radius:50%; background:#34d399; box-shadow:0 0 0 0 rgba(52,211,153,0.6); animation:livePulse 2s infinite; }
+    .live-pill.stale .live-dot { background:#fbbf24; animation:none; }
+    @keyframes livePulse { 0%{box-shadow:0 0 0 0 rgba(52,211,153,0.5);} 70%{box-shadow:0 0 0 6px rgba(52,211,153,0);} 100%{box-shadow:0 0 0 0 rgba(52,211,153,0);} }
+    @media (prefers-reduced-motion: reduce) { .live-dot { animation:none; } }
 
     /* ── Inputs / buttons ── */
     input, textarea, button { font-family:inherit; font-size:0.9rem; }
@@ -2611,7 +3102,12 @@ const indexHTML = `<!doctype html>
     .table-scroll { overflow-x:auto; }
     table { width:100%; border-collapse:collapse; font-size:0.88rem; }
     thead th {
-      position:sticky; top:64px;
+      /* Sticky resolves against .table-scroll (overflow-x:auto makes it a
+         scroll container), so the offset is relative to the table's own top,
+         not the page. top:0 pins the header at its natural row position; a
+         non-zero offset would push it down onto the first body row. z-index
+         keeps it painted above the rows when the table scrolls horizontally. */
+      position:sticky; top:0; z-index:5;
       padding:11px 14px; text-align:left; color:var(--muted); font-weight:700;
       font-size:0.72rem; text-transform:uppercase; letter-spacing:0.05em;
       background:var(--surface); border-bottom:1px solid var(--border); white-space:nowrap;
@@ -2713,6 +3209,10 @@ const indexHTML = `<!doctype html>
       </div>
       <nav class="nav-links">
         <a href="/" class="active"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg><span>Dashboard</span></a>
+        <a href="/stacks"><svg viewBox="0 0 24 24"><path d="M12 2l9 5-9 5-9-5z"/><path d="M3 12l9 5 9-5"/><path d="M3 17l9 5 9-5"/></svg><span>Stacks</span></a>
+        <a href="/images"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg><span>Images</span></a>
+        <a href="/volumes"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg><span>Volumes</span></a>
+        <a href="/networks"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 12h6"/><path d="M13 12l4-5"/><path d="M13 12l4 5"/></svg><span>Networks</span></a>
         <a href="/ipam"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span>IPAM</span></a>
         <a href="/runbooks"><svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg><span>Runbooks</span></a>
         <a href="/landing"><svg viewBox="0 0 24 24"><path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 0 0 1 1h3m10-11l2 2m-2-2v10a1 1 0 0 1-1 1h-3"/></svg><span>About</span></a>
@@ -2770,34 +3270,34 @@ const indexHTML = `<!doctype html>
     <section class="section">
       <div class="section-title"><svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M18 17V9M13 17V5M8 17v-3"/></svg> Overview</div>
       <div class="overview">
-        <div class="kpi accent"><div class="label"><svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M7 7V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2"/></svg> Total Containers</div><div class="value">{{.Total}}</div></div>
-        <div class="kpi green"><div class="label"><svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg> Running</div><div class="value">{{.Running}}</div></div>
-        <div class="kpi warn"><div class="label"><svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg> Stopped</div><div class="value">{{.Stopped}}</div></div>
-        <div class="kpi accent"><div class="label"><svg viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 12l9 4 9-4M3 17l9 4 9-4"/></svg> Images</div><div class="value">{{.Images}}</div></div>
+        <div class="kpi accent"><div class="label"><svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M7 7V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2"/></svg> Total Containers</div><div class="value" id="kpi-total">{{.Total}}</div></div>
+        <div class="kpi green"><div class="label"><svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg> Running</div><div class="value" id="kpi-running">{{.Running}}</div></div>
+        <div class="kpi warn"><div class="label"><svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg> Stopped</div><div class="value" id="kpi-stopped">{{.Stopped}}</div></div>
+        <div class="kpi accent"><div class="label"><svg viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 12l9 4 9-4M3 17l9 4 9-4"/></svg> Images</div><div class="value" id="kpi-images">{{.Images}}</div></div>
       </div>
 
       <div class="usage-row">
         {{with .Usage}}
         <div class="usage-card">
           <div class="usage-donut">
-            <svg viewBox="0 0 36 36"><circle class="track" cx="18" cy="18" r="15.9155"/><circle class="arc arc-cpu" cx="18" cy="18" r="15.9155" stroke-dasharray="{{printf "%.2f" .CPUPercent}} 100"/></svg>
-            <div class="pct">{{printf "%.0f" .CPUPercent}}%</div>
+            <svg viewBox="0 0 36 36"><circle class="track" cx="18" cy="18" r="15.9155"/><circle id="arc-cpu" class="arc arc-cpu" cx="18" cy="18" r="15.9155" stroke-dasharray="{{printf "%.2f" .CPUPercent}} 100"/></svg>
+            <div class="pct" id="pct-cpu">{{printf "%.0f" .CPUPercent}}%</div>
           </div>
-          <div class="usage-meta"><div class="title">CPU</div><div class="used">{{.CPUUsedLabel}}</div><div class="total">of {{.CPUTotalLabel}}</div></div>
+          <div class="usage-meta"><div class="title">CPU</div><div class="used" id="lbl-cpu-used">{{.CPUUsedLabel}}</div><div class="total">of {{.CPUTotalLabel}}</div></div>
         </div>
         <div class="usage-card">
           <div class="usage-donut">
-            <svg viewBox="0 0 36 36"><circle class="track" cx="18" cy="18" r="15.9155"/><circle class="arc arc-mem" cx="18" cy="18" r="15.9155" stroke-dasharray="{{printf "%.2f" .MemPercent}} 100"/></svg>
-            <div class="pct">{{printf "%.0f" .MemPercent}}%</div>
+            <svg viewBox="0 0 36 36"><circle class="track" cx="18" cy="18" r="15.9155"/><circle id="arc-mem" class="arc arc-mem" cx="18" cy="18" r="15.9155" stroke-dasharray="{{printf "%.2f" .MemPercent}} 100"/></svg>
+            <div class="pct" id="pct-mem">{{printf "%.0f" .MemPercent}}%</div>
           </div>
-          <div class="usage-meta"><div class="title">Memory</div><div class="used">{{.MemUsedLabel}}</div><div class="total">of {{.MemTotalLabel}}</div></div>
+          <div class="usage-meta"><div class="title">Memory</div><div class="used" id="lbl-mem-used">{{.MemUsedLabel}}</div><div class="total">of {{.MemTotalLabel}}</div></div>
         </div>
         <div class="usage-card">
           <div class="usage-donut">
-            <svg viewBox="0 0 36 36"><circle class="track" cx="18" cy="18" r="15.9155"/><circle class="arc arc-disk" cx="18" cy="18" r="15.9155" stroke-dasharray="{{printf "%.2f" .DiskPercent}} 100"/></svg>
-            <div class="pct">{{printf "%.0f" .DiskPercent}}%</div>
+            <svg viewBox="0 0 36 36"><circle class="track" cx="18" cy="18" r="15.9155"/><circle id="arc-disk" class="arc arc-disk" cx="18" cy="18" r="15.9155" stroke-dasharray="{{printf "%.2f" .DiskPercent}} 100"/></svg>
+            <div class="pct" id="pct-disk">{{printf "%.0f" .DiskPercent}}%</div>
           </div>
-          <div class="usage-meta"><div class="title">Storage (Docker)</div><div class="used">{{.DiskUsedLabel}}</div><div class="total">images + containers + volumes</div></div>
+          <div class="usage-meta"><div class="title">Storage (Docker)</div><div class="used" id="lbl-disk-used">{{.DiskUsedLabel}}</div><div class="total">images + containers + volumes</div></div>
         </div>
         {{end}}
       </div>
@@ -2814,6 +3314,7 @@ const indexHTML = `<!doctype html>
             <input id="cfilter" type="text" autocomplete="off" placeholder="Filter by name, image, state or ports…" oninput="filterContainers()" value="{{.Search}}" />
           </div>
           <span class="filter-hint" id="filterhint"></span>
+          <span class="live-pill" id="livepill" title="Live metrics auto-refresh"><span class="live-dot"></span><span id="liveage">live</span></span>
         </div>
         <div class="table-scroll">
           <table id="ctable">
@@ -2832,7 +3333,7 @@ const indexHTML = `<!doctype html>
             <tbody>
               {{if .Containers}}
                 {{range .Containers}}
-                <tr data-row data-search="{{.Name}} {{.ID}} {{.Image}} {{.State}} {{.Status}} {{.Ports}}">
+                <tr data-row data-cid="{{.ID}}" data-search="{{.Name}} {{.ID}} {{.Image}} {{.State}} {{.Status}} {{.Ports}}">
                   <td><div class="c-name">{{.Name}}</div><div class="c-id">{{.ID}}</div></td>
                   <td><span class="c-image">{{.Image}}</span></td>
                   <td>
@@ -2840,8 +3341,8 @@ const indexHTML = `<!doctype html>
                     <div class="c-sub">{{.Status}}</div>
                   </td>
                   <td>{{if .Ports}}<span class="c-ports">{{.Ports}}</span>{{else}}<span class="small">—</span>{{end}}</td>
-                  <td class="metric">{{if .CPUPerc}}{{.CPUPerc}}{{else}}<span class="small">—</span>{{end}}</td>
-                  <td class="metric">{{if .MemUsage}}{{.MemUsage}}<div class="c-sub">{{.MemPerc}}</div>{{else}}<span class="small">—</span>{{end}}</td>
+                  <td class="metric"><span class="js-cpu">{{if .CPUPerc}}{{.CPUPerc}}{{else}}<span class="small">—</span>{{end}}</span></td>
+                  <td class="metric"><span class="js-mem">{{if .MemUsage}}{{.MemUsage}}{{else}}<span class="small">—</span>{{end}}</span><div class="c-sub js-memperc">{{.MemPerc}}</div></td>
                   <td><span class="small">{{.Created}}</span></td>
                   <td>
                     <div class="actions" style="justify-content:flex-end;">
@@ -2851,6 +3352,8 @@ const indexHTML = `<!doctype html>
                       <form method="post" action="/containers/{{.ID}}/analyze"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-ai tip" type="submit" data-tip="Analyze with AI" aria-label="Analyze {{.Name}} with AI" data-loading="Analyzing container with AI… (this can take a while)"><svg viewBox="0 0 24 24"><path d="M12 3l1.9 4.6L18 9l-4.1 1.4L12 15l-1.9-4.6L6 9l4.1-1.4z"/><path d="M5 18l.9 2.2L8 21l-2.1.8L5 24l-.9-2.2L2 21l2.1-.8z"/></svg></button></form>
                       <form method="post" action="/containers/{{.ID}}/inspect"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-info tip" type="submit" data-tip="Inspect" aria-label="Inspect {{.Name}}"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.35-4.35"/></svg></button></form>
                       <form method="post" action="/containers/{{.ID}}/logs"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-logs tip" type="submit" data-tip="Logs" aria-label="Logs {{.Name}}"><svg viewBox="0 0 24 24"><path d="M5 4h14v16H5z"/><path d="M8 8h8"/><path d="M8 12h8"/><path d="M8 16h6"/></svg></button></form>
+                      <a class="btn-icon ic-logs tip" href="/logs?id={{.ID}}" target="_blank" rel="noopener" data-tip="Live logs" aria-label="Live logs {{.Name}}"><svg viewBox="0 0 24 24"><path d="M3 12h4l2 6 4-12 2 6h6"/></svg></a>
+                      <a class="btn-icon ic-info tip" href="/terminal?id={{.ID}}" target="_blank" rel="noopener" data-tip="Terminal" aria-label="Terminal {{.Name}}"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="M7 9l3 3-3 3"/><path d="M12 15h5"/></svg></a>
                       <form method="post" action="/containers/{{.ID}}/remove" onsubmit="return confirm('Remove container {{.Name}}?')"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-remove tip" type="submit" data-tip="Remove" aria-label="Remove {{.Name}}"><svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M7 6l1 14h8l1-14"/></svg></button></form>
                     </div>
                   </td>
@@ -2954,9 +3457,11 @@ const indexHTML = `<!doctype html>
       if (!ov) return;
       document.getElementById('loading-msg').textContent = msg || 'Working…';
       ov.classList.add('show');
-      // Safety: auto-hide if navigation never happens (e.g. error)
+      // Safety: auto-hide if navigation never happens (e.g. error). Generous
+      // because AI analysis can cold-load a multi-GB model and take minutes;
+      // a 45s fallback used to hide the spinner mid-analysis.
       if (loadingTimer) clearTimeout(loadingTimer);
-      loadingTimer = setTimeout(hideLoading, 45000);
+      loadingTimer = setTimeout(hideLoading, 240000);
     }
     function hideLoading() {
       var ov = document.getElementById('loading-overlay');
@@ -3021,6 +3526,68 @@ const indexHTML = `<!doctype html>
           outPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
         });
       }
+    })();
+
+    // ---- Live metrics hydration -------------------------------------------
+    // The page shell renders instantly from the warm server-side cache; this
+    // poller keeps CPU/memory cells, KPI counts and usage gauges current
+    // without ever reloading the document.
+    (function() {
+      var POLL_MS = 3000;
+      var DASH = '<span class="small">—</span>';
+      function setText(id, val) { var el = document.getElementById(id); if (el) el.textContent = val; }
+      function setArc(id, pct) {
+        var el = document.getElementById(id);
+        if (el) el.setAttribute('stroke-dasharray', (pct || 0).toFixed(2) + ' 100');
+      }
+      function applyUsage(u) {
+        if (!u) return;
+        setArc('arc-cpu', u.cpuPercent); setText('pct-cpu', Math.round(u.cpuPercent) + '%'); setText('lbl-cpu-used', u.cpuUsed);
+        setArc('arc-mem', u.memPercent); setText('pct-mem', Math.round(u.memPercent) + '%'); setText('lbl-mem-used', u.memUsed);
+        setArc('arc-disk', u.diskPercent); setText('pct-disk', Math.round(u.diskPercent) + '%'); setText('lbl-disk-used', u.diskUsed);
+      }
+      function applyRows(list) {
+        if (!list) return;
+        for (var i = 0; i < list.length; i++) {
+          var c = list[i];
+          var row = document.querySelector('tr[data-cid="' + c.id + '"]');
+          if (!row) continue;
+          var cpu = row.querySelector('.js-cpu');
+          if (cpu) cpu.innerHTML = c.cpu ? c.cpu : DASH;
+          var mem = row.querySelector('.js-mem');
+          if (mem) mem.innerHTML = c.mem ? c.mem : DASH;
+          var mp = row.querySelector('.js-memperc');
+          if (mp) mp.textContent = c.mem ? (c.memPerc || '') : '';
+        }
+      }
+      function markLive(ageMs) {
+        var pill = document.getElementById('livepill');
+        var age = document.getElementById('liveage');
+        if (!pill || !age) return;
+        var secs = Math.max(0, Math.round((ageMs || 0) / 1000));
+        age.textContent = secs <= 1 ? 'live' : 'live · ' + secs + 's';
+        pill.classList.toggle('stale', (ageMs || 0) > POLL_MS * 4);
+      }
+      function tick() {
+        var q = new URLSearchParams(location.search).get('q') || '';
+        fetch('/api/dashboard.json' + (q ? ('?q=' + encodeURIComponent(q)) : ''), { headers: { 'Accept': 'application/json' } })
+          .then(function(r) { if (!r.ok) throw new Error('http ' + r.status); return r.json(); })
+          .then(function(d) {
+            setText('kpi-total', d.total); setText('kpi-running', d.running);
+            setText('kpi-stopped', d.stopped); setText('kpi-images', d.images);
+            applyUsage(d.usage); applyRows(d.containers); markLive(d.cacheAgeMs);
+          })
+          .catch(function() {
+            var pill = document.getElementById('livepill');
+            if (pill) { pill.classList.add('stale'); var a = document.getElementById('liveage'); if (a) a.textContent = 'offline'; }
+          });
+      }
+      // Only poll when the tab is visible to avoid needless load.
+      var timer = null;
+      function start() { if (!timer) { tick(); timer = setInterval(function() { if (!document.hidden) tick(); }, POLL_MS); } }
+      function stop() { if (timer) { clearInterval(timer); timer = null; } }
+      document.addEventListener('visibilitychange', function() { if (document.hidden) stop(); else start(); });
+      start();
     })();
   </script>
 </body>
