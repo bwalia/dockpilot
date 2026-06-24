@@ -3091,7 +3091,12 @@ const indexHTML = `<!doctype html>
     .table-scroll { overflow-x:auto; }
     table { width:100%; border-collapse:collapse; font-size:0.88rem; }
     thead th {
-      position:sticky; top:64px;
+      /* Sticky resolves against .table-scroll (overflow-x:auto makes it a
+         scroll container), so the offset is relative to the table's own top,
+         not the page. top:0 pins the header at its natural row position; a
+         non-zero offset would push it down onto the first body row. z-index
+         keeps it painted above the rows when the table scrolls horizontally. */
+      position:sticky; top:0; z-index:5;
       padding:11px 14px; text-align:left; color:var(--muted); font-weight:700;
       font-size:0.72rem; text-transform:uppercase; letter-spacing:0.05em;
       background:var(--surface); border-bottom:1px solid var(--border); white-space:nowrap;
