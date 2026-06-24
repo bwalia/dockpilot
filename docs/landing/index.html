@@ -199,8 +199,8 @@
           <span class="badge">Open Source · AI for Docker Ops</span>
           <h1>Docker operations dashboard,<br>powered by AI.</h1>
           <p class="subtitle">
-            DockPilot gives you one cockpit for container lifecycle actions, inspect and log access, and AI-assisted Docker command generation.
-            Troubleshoot and operate local or remote Docker hosts faster.
+            DockPilot is one cockpit for your whole Docker environment — containers, images, volumes, networks and Compose stacks —
+            with an in-browser terminal, live log streaming, AI-assisted analysis, and an instant, always-warm dashboard.
           </p>
           <div class="hero-actions">
             <a class="btn btn-primary" href="/">Open Dashboard</a>
@@ -213,24 +213,24 @@
       <div class="wrap">
         <div class="highlights">
           <div class="highlight">
-            <span class="highlight-icon">⚙</span>
-            <h3>Container Control</h3>
-            <p>Start, stop, restart, remove, inspect and logs from one grid</p>
+            <span class="highlight-icon">⚡</span>
+            <h3>Instant Dashboard</h3>
+            <p>Warm metrics cache loads the dashboard in ~67ms — roughly 100× faster</p>
           </div>
           <div class="highlight">
-            <span class="highlight-icon">✨</span>
-            <h3>AI Commands</h3>
-            <p>Translate natural language to safe Docker CLI suggestions</p>
+            <span class="highlight-icon">🖥</span>
+            <h3>Web Terminal</h3>
+            <p>Open a real shell into any running container, right in the browser</p>
           </div>
           <div class="highlight">
-            <span class="highlight-icon">📦</span>
-            <h3>Host Visibility</h3>
-            <p>See running and stopped containers with status and ports</p>
+            <span class="highlight-icon">📡</span>
+            <h3>Live Log Streaming</h3>
+            <p>Follow container logs in real time with tail, filter and download</p>
           </div>
           <div class="highlight">
-            <span class="highlight-icon">🔐</span>
-            <h3>Basic Auth</h3>
-            <p>Simple built-in access control for internal environments</p>
+            <span class="highlight-icon">🧱</span>
+            <h3>Compose Stacks</h3>
+            <p>Deploy and control multi-service Compose projects as one unit</p>
           </div>
         </div>
       </div>
@@ -243,20 +243,40 @@
           </div>
           <div class="features">
             <article class="feature">
-              <h3>Action-Ready Container Table</h3>
-              <p>Operate containers instantly with icon actions for lifecycle, inspect output, and last 200 log lines.</p>
+              <h3>⚡ Instant, Live Dashboard</h3>
+              <p>A warm background cache serves container and host metrics in ~67ms, then live-refreshes CPU, memory and status in place — no full page reloads.</p>
             </article>
             <article class="feature">
-              <h3>Run Any Docker Command</h3>
-              <p>Execute Docker subcommands from the UI and keep command output visible for quick review.</p>
+              <h3>🖥 In-Browser Web Terminal</h3>
+              <p>Exec straight into a running container over a WebSocket and run commands interactively, with the shell auto-selected and inputs validated.</p>
             </article>
             <article class="feature">
-              <h3>AI Assistant with Ollama</h3>
-              <p>Ask in plain English and get a Docker command suggestion plus short explanation before execution.</p>
+              <h3>📡 Streaming Logs (Follow Mode)</h3>
+              <p>Tail container logs in real time over SSE with a tail-N selector, text filter and one-click download — not just a one-shot dump.</p>
             </article>
             <article class="feature">
-              <h3>Quick Create Workflow</h3>
-              <p>Launch containers with optional ports, env vars, and command arguments in one compact form.</p>
+              <h3>🧱 Compose Stack Management</h3>
+              <p>List Compose projects with their services grouped, deploy from a compose file, and run up / pull / restart / stop / down per stack.</p>
+            </article>
+            <article class="feature">
+              <h3>🖼 Images, Volumes & Networks</h3>
+              <p>Full resource management: pull and prune images, create and remove volumes and networks, with search, KPIs and safe confirmations.</p>
+            </article>
+            <article class="feature">
+              <h3>🤖 AI Analysis & Runbooks</h3>
+              <p>Analyze containers with a local Ollama model and turn the findings into saved, runnable runbooks — plus plain-English Docker command suggestions.</p>
+            </article>
+            <article class="feature">
+              <h3>📊 Built-in Observability</h3>
+              <p>Prometheus <code>/metrics</code>, a <code>/healthz</code> probe and structured request logs are exposed out of the box for scraping and dashboards.</p>
+            </article>
+            <article class="feature">
+              <h3>🔐 Hardened by Default</h3>
+              <p>Basic Auth on every route plus CSRF protection on all state-changing actions and security headers (CSP, anti-clickjacking, nosniff).</p>
+            </article>
+            <article class="feature">
+              <h3>🌐 IPAM & Port Mapping</h3>
+              <p>Visualize networks, subnets, gateways and host-to-container port mappings, with AI-assisted analysis of your addressing layout.</p>
             </article>
           </div>
         </div>
@@ -276,6 +296,14 @@
             <figure class="screenshot">
               <div class="shot">AI + command execution panel</div>
               <figcaption>AI command suggestion, Docker command runner, and output panel for inspect/logs results.</figcaption>
+            </figure>
+            <figure class="screenshot">
+              <div class="shot">Web terminal &amp; live logs</div>
+              <figcaption>Interactive shell into a running container and real-time, follow-mode log streaming.</figcaption>
+            </figure>
+            <figure class="screenshot">
+              <div class="shot">Stacks, images, volumes &amp; networks</div>
+              <figcaption>Manage Compose projects and Docker resources with search, KPIs and safe prune actions.</figcaption>
             </figure>
           </div>
         </div>
