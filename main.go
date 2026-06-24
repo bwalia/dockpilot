@@ -354,7 +354,7 @@ func main() {
 	addr := envOrDefault("ADDR", ":8090")
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           app.withBasicAuth(withLogging(app.metrics, mux)),
+		Handler:           secureHeaders(app.withBasicAuth(csrfProtect(withLogging(app.metrics, mux)))),
 		ReadHeaderTimeout: 10 * time.Second,
 		// Generous write timeout: long enough for slow AI/runbook operations
 		// (each Docker step is itself capped at 30s) but bounds hung sockets.
