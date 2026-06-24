@@ -1658,6 +1658,17 @@ func (a *App) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "dockpilot_uptime_seconds %d\n", uptime)
 }
 
+// aiTimeout bounds an Ollama request. Local CPU inference must cold-load the
+// model (several GB) into memory on first use — that alone can take ~1 minute
+// before a single token is generated — then produce the full completion. The
+// old fixed 45s/90s caps were shorter than a cold start, so analyses failed
+// with "context deadline exceeded while awaiting headers". Default generously
+// and allow overriding via OLLAMA_TIMEOUT (e.g. "180s", "5m"). Keep it below
+// the server's 300s WriteTimeout so the handler can still write a response.
+func aiTimeout() time.Duration {
+	return envDurationOrDefault("OLLAMA_TIMEOUT", 240*time.Second)
+}
+
 func interpretDockerCommandWithOllama(userPrompt string) (AISuggestion, error) {
 	baseURL := strings.TrimRight(envOrDefault("OLLAMA_BASE_URL", "http://192.168.1.177:11434/v1"), "/")
 	apiKey := strings.TrimSpace(os.Getenv("OLLAMA_API_KEY"))
@@ -1696,7 +1707,7 @@ Rules:
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	client := &http.Client{Timeout: 45 * time.Second}
+	client := &http.Client{Timeout: aiTimeout()}
 	res, err := client.Do(req)
 	if err != nil {
 		return AISuggestion{}, err
@@ -1806,7 +1817,7 @@ func analyzeWithOllama(systemPrompt, userContent string) (string, error) {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	client := &http.Client{Timeout: 90 * time.Second}
+	client := &http.Client{Timeout: aiTimeout()}
 	res, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -3446,9 +3457,11 @@ const indexHTML = `<!doctype html>
       if (!ov) return;
       document.getElementById('loading-msg').textContent = msg || 'Working…';
       ov.classList.add('show');
-      // Safety: auto-hide if navigation never happens (e.g. error)
+      // Safety: auto-hide if navigation never happens (e.g. error). Generous
+      // because AI analysis can cold-load a multi-GB model and take minutes;
+      // a 45s fallback used to hide the spinner mid-analysis.
       if (loadingTimer) clearTimeout(loadingTimer);
-      loadingTimer = setTimeout(hideLoading, 45000);
+      loadingTimer = setTimeout(hideLoading, 240000);
     }
     function hideLoading() {
       var ov = document.getElementById('loading-overlay');
