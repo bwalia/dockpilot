@@ -235,15 +235,15 @@ const logsHTML = `<!doctype html>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Logs — {{.Name}} — DockPilot</title>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Sora:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
-    :root { --bg:#0a0e1a; --surface:#111827; --border:#1f2937; --accent:#3b82f6; --success:#10b981; --warning:#f59e0b; --danger:#ef4444; --muted:#6b7280; --text:#e5e7eb; }
+    :root { --bg:#091018; --surface:#101925; --border:rgba(148,180,200,0.12); --accent:#0d9488; --success:#34d399; --warning:#fbbf24; --danger:#f87171; --muted:#8499ad; --text:#eef4f8; --sans:'Sora', ui-sans-serif, system-ui, sans-serif; --mono:'IBM Plex Mono', ui-monospace, monospace; }
     * { box-sizing:border-box; }
-    body { margin:0; background:var(--bg); color:var(--text); font-family:'JetBrains Mono', ui-monospace, monospace; height:100vh; display:flex; flex-direction:column; }
+    body { margin:0; background:var(--bg); color:var(--text); font-family:var(--sans); height:100vh; display:flex; flex-direction:column; -webkit-font-smoothing:antialiased; }
     .bar { display:flex; align-items:center; gap:10px; padding:10px 16px; border-bottom:1px solid var(--border); background:var(--surface); flex-wrap:wrap; }
     .bar a { color:var(--muted); text-decoration:none; font-size:13px; font-weight:600; padding:6px 12px; border-radius:8px; }
     .bar a:hover { color:var(--text); background:rgba(255,255,255,0.06); }
-    .title { font-size:15px; font-weight:700; }
+    .title { font-size:15px; font-weight:700; letter-spacing:-0.02em; }
     .small { font-size:12px; color:var(--muted); }
     .spacer { flex:1; }
     .dot { width:9px; height:9px; border-radius:50%; display:inline-block; background:var(--muted); }
@@ -253,7 +253,7 @@ const logsHTML = `<!doctype html>
     button.accent { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
     input[type=text] { min-width:200px; }
     input:focus, select:focus { outline:none; border-color:var(--accent); }
-    #log { flex:1; overflow:auto; margin:0; padding:10px 14px; font-size:12.5px; line-height:1.5; white-space:pre-wrap; word-break:break-word; }
+    #log { flex:1; overflow:auto; margin:0; padding:10px 14px; font-family:var(--mono); font-size:12.5px; line-height:1.5; white-space:pre-wrap; word-break:break-word; }
     .line.hidden { display:none; }
     .line .match { background:#f59e0b55; border-radius:3px; }
     .meta { color:var(--muted); font-style:italic; }

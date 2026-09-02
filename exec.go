@@ -326,11 +326,11 @@ const terminalHTML = `<!doctype html>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Sora:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
-    :root { --bg:#0a0e1a; --surface:#111827; --border:#1f2937; --accent:#3b82f6; --success:#10b981; --danger:#ef4444; --muted:#6b7280; --text:#e5e7eb; }
+    :root { --bg:#091018; --surface:#101925; --border:rgba(148,180,200,0.12); --accent:#0d9488; --success:#34d399; --danger:#f87171; --muted:#8499ad; --text:#eef4f8; --sans:'Sora', ui-sans-serif, system-ui, sans-serif; --mono:'IBM Plex Mono', ui-monospace, monospace; }
     * { box-sizing:border-box; }
-    body { margin:0; background:var(--bg); color:var(--text); font-family:'JetBrains Mono', ui-monospace, monospace; height:100vh; display:flex; flex-direction:column; }
+    body { margin:0; background:var(--bg); color:var(--text); font-family:var(--sans); height:100vh; display:flex; flex-direction:column; -webkit-font-smoothing:antialiased; }
     .bar { display:flex; align-items:center; gap:10px; padding:10px 16px; border-bottom:1px solid var(--border); background:var(--surface); flex-wrap:wrap; }
     .bar a { color:var(--muted); text-decoration:none; font-size:13px; font-weight:600; padding:6px 12px; border-radius:8px; }
     .bar a:hover { color:var(--text); background:rgba(255,255,255,0.06); }
@@ -368,7 +368,7 @@ const terminalHTML = `<!doctype html>
   <div id="term"></div>
   <script>
     var CID = "{{.ID}}";
-    var term = new Terminal({ cursorBlink:true, fontFamily:"JetBrains Mono, monospace", fontSize:13,
+    var term = new Terminal({ cursorBlink:true, fontFamily:"IBM Plex Mono, ui-monospace, monospace", fontSize:13,
       theme:{ background:"#0a0e1a", foreground:"#e5e7eb" } });
     var fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
