@@ -318,11 +318,11 @@ const stacksHTML = `<!doctype html>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Stacks — DockPilot</title>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Sora:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
-    :root { --bg:#0a0e1a; --surface:#111827; --border:#1f2937; --accent:#3b82f6; --success:#10b981; --warning:#f59e0b; --danger:#ef4444; --muted:#6b7280; --text:#e5e7eb; }
+    :root { --bg:#091018; --surface:#101925; --border:rgba(148,180,200,0.12); --accent:#0d9488; --success:#34d399; --warning:#fbbf24; --danger:#f87171; --muted:#8499ad; --text:#eef4f8; --sans:'Sora', ui-sans-serif, system-ui, sans-serif; --mono:'IBM Plex Mono', ui-monospace, monospace; }
     * { box-sizing:border-box; }
-    body { margin:0; background: radial-gradient(1200px 600px at 90% -100px, #1d4ed833 0%, transparent 60%), var(--bg); color:var(--text); font-family:'JetBrains Mono', ui-monospace, monospace; }
+    body { margin:0; background: radial-gradient(900px 420px at 92% -80px, rgba(45,212,191,0.14) 0%, transparent 55%), var(--bg); color:var(--text); font-family:var(--sans); -webkit-font-smoothing:antialiased; letter-spacing:-0.01em; }
     .wrap { width:100%; padding:20px 24px; }
     .navbar { display:flex; align-items:center; gap:8px; margin-bottom:16px; flex-wrap:wrap; }
     .navbar a { color:var(--muted); text-decoration:none; font-size:13px; font-weight:600; padding:6px 12px; border-radius:8px; border:1px solid transparent; }
@@ -358,7 +358,7 @@ const stacksHTML = `<!doctype html>
     .pill { font-size:11px; padding:2px 8px; border-radius:999px; }
     .pill.run { background:#022c22; border:1px solid #065f46; color:#6ee7b7; }
     .pill.off { background:#1f2937; border:1px solid var(--border); color:var(--muted); }
-    code { color:#93c5fd; }
+    code { color:#5eead4; font-family:var(--mono); }
   </style>
 </head>
 <body>

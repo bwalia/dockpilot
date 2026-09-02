@@ -209,8 +209,9 @@ func csrfReject(w http.ResponseWriter, r *http.Request, reason string) {
 // event handlers (e.g. onsubmit="return confirm(...)").
 func secureHeaders(next http.Handler) http.Handler {
 	const csp = "default-src 'self'; " +
-		"script-src 'self' 'unsafe-inline'; " +
-		"style-src 'self' 'unsafe-inline'; " +
+		"script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; " +
+		"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; " +
+		"font-src 'self' https://fonts.gstatic.com data:; " +
 		"img-src 'self' data:; " +
 		"connect-src 'self'; " +
 		"object-src 'none'; " +
