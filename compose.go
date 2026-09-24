@@ -284,7 +284,8 @@ func validComposeFile(s string) bool {
 func runCompose(args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), composeCmdTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := exec.CommandContext(ctx, dockerBin(), args...)
+	cmd.Env = dockerCmdEnv()
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return string(out), fmt.Errorf("compose command timed out after %s", composeCmdTimeout)

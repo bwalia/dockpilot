@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -751,7 +752,7 @@ func (a *App) handleRunbooks(w http.ResponseWriter, r *http.Request) {
 	data := RunbooksData{
 		Now:        time.Now().Format("2006-01-02 15:04:05"),
 		DockerHost: envOrDefault("DOCKER_HOST", "unix:///var/run/docker.sock"),
-		AIModel:    envOrDefault("OLLAMA_MODEL", "llama3"),
+		AIModel:    ollamaAnalyzeModel(),
 	}
 	for _, rb := range snapshotRunbooks() {
 		view := RunbookView{Runbook: rb, Selected: rb.ID == selectedID}
@@ -790,7 +791,7 @@ func (a *App) handleRunbookExecute(w http.ResponseWriter, r *http.Request) {
 	data := RunbooksData{
 		Now:        time.Now().Format("2006-01-02 15:04:05"),
 		DockerHost: envOrDefault("DOCKER_HOST", "unix:///var/run/docker.sock"),
-		AIModel:    envOrDefault("OLLAMA_MODEL", "llama3"),
+		AIModel:    ollamaAnalyzeModel(),
 	}
 
 	results := make([]RunbookStepResult, len(rb.Steps))
@@ -872,7 +873,7 @@ func newRunbooksData(selectedID string) RunbooksData {
 	data := RunbooksData{
 		Now:        time.Now().Format("2006-01-02 15:04:05"),
 		DockerHost: envOrDefault("DOCKER_HOST", "unix:///var/run/docker.sock"),
-		AIModel:    envOrDefault("OLLAMA_MODEL", "llama3"),
+		AIModel:    ollamaAnalyzeModel(),
 	}
 	for _, cat := range snapshotRunbooks() {
 		view := RunbookView{Runbook: cat, Selected: cat.ID == selectedID}
@@ -1063,7 +1064,7 @@ func executeAIStep(raw string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	args := strings.Fields(cmd)
-	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	out, err := exec.CommandContext(ctx, dockerBin(), args...).CombinedOutput()
 	text := strings.TrimSpace(string(out))
 	if ctx.Err() == context.DeadlineExceeded {
 		return text, fmt.Errorf("timed out after 30s (skipped interactive/long-running command)")
@@ -1248,11 +1249,12 @@ func analyzeContainerWithOllama(id string) (string, error) {
 		id)
 	statsOut, _ := runDockerCombined("stats", "--no-stream", "--format",
 		"CPU={{.CPUPerc}} Mem={{.MemUsage}} Mem%={{.MemPerc}} NetIO={{.NetIO}} BlockIO={{.BlockIO}}", id)
-	logsOut, _ := runDockerCombined("logs", "--tail", "120", id)
+	// Keep the log window small so a light model stays fast.
+	logsOut, _ := runDockerCombined("logs", "--tail", "60", id)
 
 	logsOut = strings.TrimSpace(logsOut)
-	if len(logsOut) > 6000 {
-		logsOut = logsOut[len(logsOut)-6000:]
+	if len(logsOut) > 3500 {
+		logsOut = logsOut[len(logsOut)-3500:]
 	}
 	if logsOut == "" {
 		logsOut = "(no logs)"
@@ -1264,9 +1266,9 @@ Respond in concise plain text (no JSON, no markdown headers) covering:
 1. Health summary: is the container healthy, degraded, or failing, and why.
 2. Notable signals in the logs or stats (errors, restarts, OOM, high CPU/memory).
 3. Concrete next steps as Docker CLI commands the operator can run.
-If everything looks healthy, say so clearly. Be specific and actionable.`
+If everything looks healthy, say so clearly. Be specific and actionable. Keep under 200 words.`
 
-	userContent := fmt.Sprintf("Metadata: %s\n\nStats: %s\n\nRecent logs (last 120 lines):\n%s",
+	userContent := fmt.Sprintf("Metadata: %s\n\nStats: %s\n\nRecent logs (last 60 lines):\n%s",
 		strings.TrimSpace(inspectOut), strings.TrimSpace(statsOut), logsOut)
 
 	return analyzeWithOllama(systemPrompt, userContent)
@@ -1280,8 +1282,10 @@ func executeRunbookCommand(raw string) (string, error) {
 	}
 
 	if strings.Contains(cmd, "$(") || strings.Contains(cmd, "`") {
-		shellCmd := "docker " + cmd
-		out, err := exec.Command("sh", "-c", shellCmd).CombinedOutput()
+		shellCmd := dockerBin() + " " + cmd
+		c := exec.Command("sh", "-c", shellCmd)
+		c.Env = dockerCmdEnv()
+		out, err := c.CombinedOutput()
 		text := strings.TrimSpace(string(out))
 		if err != nil {
 			if text == "" {
@@ -1363,7 +1367,7 @@ func (a *App) handleAIInterpret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.AIPrompt = prompt
-	d.AIModel = envOrDefault("OLLAMA_MODEL", "llama3")
+	d.AIModel = ollamaModel()
 
 	if prompt == "" {
 		d.Error = "AI prompt is required"
@@ -1437,7 +1441,7 @@ func (a *App) buildDashboardData(search string) (PageData, error) {
 		AIPrompt:      "",
 		AISuggestion:  "",
 		AIExplanation: "",
-		AIModel:       envOrDefault("OLLAMA_MODEL", "llama3"),
+		AIModel:       ollamaModel(),
 		Now:           time.Now().Format("2006-01-02 15:04:05"),
 		DockerHost:    envOrDefault("DOCKER_HOST", "unix:///var/run/docker.sock"),
 	}, nil
@@ -1669,10 +1673,22 @@ func aiTimeout() time.Duration {
 	return envDurationOrDefault("OLLAMA_TIMEOUT", 240*time.Second)
 }
 
+// ollamaModel is the general-purpose assistant model (command suggestions).
+func ollamaModel() string {
+	return envOrDefault("OLLAMA_MODEL", "llama3")
+}
+
+// ollamaAnalyzeModel is a lighter model used for container/IPAM/runbook
+// error analysis. Heavy coder models (e.g. qwen3-coder) are slow to
+// cold-load; prefer a small local model via OLLAMA_ANALYZE_MODEL.
+func ollamaAnalyzeModel() string {
+	return envOrDefault("OLLAMA_ANALYZE_MODEL", "ornith:latest")
+}
+
 func interpretDockerCommandWithOllama(userPrompt string) (AISuggestion, error) {
 	baseURL := strings.TrimRight(envOrDefault("OLLAMA_BASE_URL", "http://192.168.1.177:11434/v1"), "/")
 	apiKey := strings.TrimSpace(os.Getenv("OLLAMA_API_KEY"))
-	model := envOrDefault("OLLAMA_MODEL", "llama3")
+	model := ollamaModel()
 
 	systemPrompt := `You are DockPilot AI assistant.
 Return ONLY JSON object with keys:
@@ -1788,11 +1804,12 @@ func parseAISuggestion(raw string) (AISuggestion, error) {
 
 // analyzeWithOllama sends a system prompt plus arbitrary context to the local
 // Ollama (OpenAI-compatible) endpoint and returns the model's free-text reply.
-// It shares the same env-var configuration as interpretDockerCommandWithOllama.
+// Uses OLLAMA_ANALYZE_MODEL (light) so heavy coder models are not cold-loaded
+// for every container/IPAM/runbook analysis click.
 func analyzeWithOllama(systemPrompt, userContent string) (string, error) {
 	baseURL := strings.TrimRight(envOrDefault("OLLAMA_BASE_URL", "http://192.168.1.177:11434/v1"), "/")
 	apiKey := strings.TrimSpace(os.Getenv("OLLAMA_API_KEY"))
-	model := envOrDefault("OLLAMA_MODEL", "llama3")
+	model := ollamaAnalyzeModel()
 
 	reqBody := map[string]interface{}{
 		"model": model,
@@ -1800,7 +1817,9 @@ func analyzeWithOllama(systemPrompt, userContent string) (string, error) {
 			{"role": "system", "content": systemPrompt},
 			{"role": "user", "content": userContent},
 		},
-		"temperature": 0.3,
+		"temperature": 0.2,
+		// Cap completion size — analysis should be short and actionable.
+		"max_tokens": 700,
 	}
 
 	b, err := json.Marshal(reqBody)
@@ -1829,7 +1848,7 @@ func analyzeWithOllama(systemPrompt, userContent string) (string, error) {
 		return "", err
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return "", fmt.Errorf("ollama returned %s", res.Status)
+		return "", fmt.Errorf("ollama returned %s (model=%s)", res.Status, model)
 	}
 
 	var chatResp struct {
@@ -2416,10 +2435,60 @@ func computeHostUsage(stats map[string]containerStat, h hostInfo) HostUsage {
 // can never hang a page request or the background collector forever.
 const dockerCmdTimeout = 25 * time.Second
 
+var (
+	dockerBinOnce sync.Once
+	dockerBinPath string
+)
+
+// dockerBin resolves the docker CLI once. LaunchAgents / nohup often inherit a
+// minimal PATH that omits Homebrew (/opt/homebrew/bin), which is where docker
+// lives on Apple Silicon Macs.
+func dockerBin() string {
+	dockerBinOnce.Do(func() {
+		if v := strings.TrimSpace(os.Getenv("DOCKER_BIN")); v != "" {
+			dockerBinPath = v
+			return
+		}
+		if p, err := exec.LookPath("docker"); err == nil {
+			dockerBinPath = p
+			return
+		}
+		for _, candidate := range []string{
+			"/opt/homebrew/bin/docker",
+			"/usr/local/bin/docker",
+			"/usr/bin/docker",
+		} {
+			if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+				dockerBinPath = candidate
+				return
+			}
+		}
+		dockerBinPath = "docker"
+	})
+	return dockerBinPath
+}
+
+// dockerCmdEnv ensures PATH includes the directory that holds the docker CLI
+// so nested `$(docker …)` shell expansions in runbooks also work.
+func dockerCmdEnv() []string {
+	path := os.Getenv("PATH")
+	extras := []string{filepath.Dir(dockerBin()), "/opt/homebrew/bin", "/usr/local/bin"}
+	for _, extra := range extras {
+		if extra == "" || extra == "." {
+			continue
+		}
+		if !strings.Contains(path, extra) {
+			path = extra + string(os.PathListSeparator) + path
+		}
+	}
+	return append(os.Environ(), "PATH="+path)
+}
+
 func runDocker(args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), dockerCmdTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := exec.CommandContext(ctx, dockerBin(), args...)
+	cmd.Env = dockerCmdEnv()
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -2439,7 +2508,8 @@ func runDocker(args ...string) (string, error) {
 }
 
 func runDockerCombined(args ...string) (string, error) {
-	cmd := exec.Command("docker", args...)
+	cmd := exec.Command(dockerBin(), args...)
+	cmd.Env = dockerCmdEnv()
 	out, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
 	if err != nil {
@@ -2549,7 +2619,7 @@ func buildIPAMData(search string) IPAMData {
 	data := IPAMData{
 		Now:        time.Now().Format("2006-01-02 15:04:05"),
 		DockerHost: envOrDefault("DOCKER_HOST", "unix:///var/run/docker.sock"),
-		AIModel:    envOrDefault("OLLAMA_MODEL", "llama3"),
+		AIModel:    ollamaAnalyzeModel(),
 	}
 
 	networks, netErr := listDockerNetworks()
@@ -2872,35 +2942,42 @@ const indexHTML = `<!doctype html>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>DockPilot — Docker Cockpit</title>
-  <meta name="theme-color" content="#091018" />
+  <meta name="theme-color" content="#05070c" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Sora:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg:#091018;
-      --surface:#101925;
-      --surface-2:#182433;
-      --surface-3:#223044;
-      --border:rgba(148,180,200,0.12);
-      --border-hover:rgba(148,180,200,0.22);
-      --text:#eef4f8;
-      --text-secondary:#c5d4e0;
-      --muted:#8499ad;
-      --accent:#0d9488;
-      --accent-light:#2dd4bf;
-      --accent-glow:rgba(13,148,136,0.16);
-      --success:#34d399;
-      --success-bg:rgba(52,211,153,0.1);
-      --success-border:rgba(52,211,153,0.28);
+      --bg:#05070c;
+      --surface:#0c111a;
+      --surface-2:#141b27;
+      --surface-3:#1c2534;
+      --border:rgba(148,163,184,0.14);
+      --border-hover:rgba(148,163,184,0.28);
+      --text:#f1f5f9;
+      --text-secondary:#cbd5e1;
+      --muted:#94a3b8;
+      --accent:#3b82f6;
+      --accent-light:#60a5fa;
+      --accent-glow:rgba(59,130,246,0.16);
+      --cta:#f97316;
+      --cta-hover:#ea580c;
+      --cta-glow:rgba(249,115,22,0.22);
+      --success:#22c55e;
+      --success-bg:rgba(34,197,94,0.12);
+      --success-border:rgba(34,197,94,0.32);
       --warning:#fbbf24;
-      --warning-bg:rgba(251,191,36,0.1);
-      --danger:#f87171;
-      --danger-bg:rgba(248,113,113,0.1);
-      --radius:14px;
-      --radius-sm:9px;
-      --sans:'Sora', ui-sans-serif, system-ui, sans-serif;
-      --mono:'IBM Plex Mono', ui-monospace, "SF Mono", Menlo, monospace;
+      --warning-bg:rgba(251,191,36,0.12);
+      --danger:#ef4444;
+      --danger-bg:rgba(239,68,68,0.12);
+      --radius:12px;
+      --radius-sm:8px;
+      --z-nav:50;
+      --z-tip:20;
+      --z-overlay:1000;
+      --sans:'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif;
+      --mono:'Fira Code', ui-monospace, "SF Mono", Menlo, monospace;
+      --focus:0 0 0 2px var(--bg), 0 0 0 4px var(--accent-light);
     }
     *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
     html { scroll-behavior:smooth; }
@@ -2908,44 +2985,50 @@ const indexHTML = `<!doctype html>
       font-family:var(--sans);
       color:var(--text);
       background:
-        radial-gradient(900px 420px at 92% -80px, rgba(45,212,191,0.14) 0%, transparent 55%),
-        radial-gradient(700px 380px at -10% 40%, rgba(56,189,248,0.06) 0%, transparent 50%),
+        radial-gradient(900px 480px at 88% -100px, rgba(59,130,246,0.14) 0%, transparent 55%),
+        radial-gradient(700px 360px at -8% 30%, rgba(249,115,22,0.06) 0%, transparent 50%),
         var(--bg);
       line-height:1.55;
+      font-size:16px;
       -webkit-font-smoothing:antialiased;
-      letter-spacing:-0.01em;
+      letter-spacing:-0.011em;
       min-height:100vh;
+      touch-action:manipulation;
+      overscroll-behavior:contain;
     }
-    a { color:inherit; text-decoration:none; }
-    .wrap { width:100%; max-width:none; margin:0; padding:0 28px; }
+    a { color:inherit; text-decoration:none; cursor:pointer; }
+    button, .btn, .btn-icon, .tab, .quick-link, .nav-links a { cursor:pointer; }
+    :focus-visible { outline:none; box-shadow:var(--focus); }
+    .wrap { width:100%; max-width:none; margin:0; padding:0 32px; }
 
     /* ── Nav ── */
     .nav {
-      position:sticky; top:0; z-index:50;
-      background:rgba(9,16,24,0.82);
+      position:sticky; top:0; z-index:var(--z-nav);
+      background:rgba(5,7,12,0.86);
       backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px);
       border-bottom:1px solid var(--border);
     }
-    .nav-inner { display:flex; align-items:center; gap:18px; height:60px; }
-    .brand { display:flex; align-items:center; gap:11px; }
+    .nav-inner { display:flex; align-items:center; gap:16px; min-height:64px; padding:8px 0; }
+    .brand { display:flex; align-items:center; gap:11px; flex-shrink:0; }
     .brand .logo-badge {
-      width:34px; height:34px; border-radius:10px;
-      background:linear-gradient(145deg, #14b8a6 0%, #0e7490 100%);
+      width:36px; height:36px; border-radius:10px;
+      background:linear-gradient(145deg, #3b82f6 0%, #1d4ed8 100%);
       display:flex; align-items:center; justify-content:center;
-      box-shadow:0 6px 20px rgba(13,148,136,0.35);
+      box-shadow:0 0 18px rgba(59,130,246,0.35);
     }
     .brand .logo-badge svg { width:18px; height:18px; stroke:#fff; fill:none; stroke-width:2; }
-    .brand .name { font-weight:700; font-size:1.15rem; letter-spacing:-0.03em; }
-    .brand .name span { color:var(--accent-light); }
+    .brand .name { font-weight:800; font-size:1.12rem; letter-spacing:-0.04em; }
+    .brand .name span { color:var(--accent-light); text-shadow:0 0 12px rgba(96,165,250,0.35); }
     .brand .tag {
       font-size:10px; color:var(--muted); border:1px solid var(--border);
       border-radius:6px; padding:3px 8px; font-weight:600; white-space:nowrap;
-      letter-spacing:0.04em; text-transform:uppercase;
+      letter-spacing:0.05em; text-transform:uppercase;
     }
-    .nav-links { display:flex; align-items:center; gap:2px; }
+    .nav-links { display:flex; align-items:center; gap:2px; flex-wrap:wrap; }
     .nav-links a {
       font-size:0.84rem; font-weight:600; color:var(--muted);
-      padding:7px 12px; border-radius:var(--radius-sm); transition:all .15s;
+      min-height:40px; padding:8px 12px; border-radius:var(--radius-sm);
+      transition:color .2s, background .2s;
       display:inline-flex; align-items:center; gap:6px;
     }
     .nav-links a:hover { color:var(--text); background:rgba(255,255,255,0.05); }
@@ -2956,125 +3039,138 @@ const indexHTML = `<!doctype html>
       display:inline-flex; align-items:center; gap:8px;
       font-size:0.78rem; color:var(--text-secondary); font-weight:500;
       background:var(--success-bg); border:1px solid var(--success-border);
-      padding:6px 12px; border-radius:999px; white-space:nowrap;
+      padding:8px 12px; border-radius:999px; white-space:nowrap;
     }
-    .socket-badge .dot { width:7px; height:7px; border-radius:50%; background:var(--success); box-shadow:0 0 0 3px rgba(52,211,153,0.18); animation:pulse 2s infinite; }
+    .socket-badge .dot { width:7px; height:7px; border-radius:50%; background:var(--success); box-shadow:0 0 0 3px rgba(34,197,94,0.18); animation:pulse 2s infinite; }
     @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.45;} }
     .socket-badge .mono { font-family:var(--mono); color:var(--muted); font-size:0.72rem; }
 
     /* ── Page ── */
-    main { padding:26px 0 64px; }
-    .page-head { margin-bottom:22px; }
-    .page-head h1 { font-size:1.55rem; font-weight:700; letter-spacing:-0.035em; }
-    .page-head p { color:var(--muted); font-size:0.9rem; margin-top:4px; font-weight:400; }
+    main { padding:28px 0 72px; }
+    .page-head { margin-bottom:24px; display:flex; flex-wrap:wrap; align-items:end; justify-content:space-between; gap:12px; }
+    .page-head h1 { font-size:clamp(1.35rem, 2.4vw, 1.75rem); font-weight:800; letter-spacing:-0.04em; }
+    .page-head p { color:var(--muted); font-size:0.92rem; margin-top:4px; font-weight:500; }
 
-    .msg { padding:12px 15px; border-radius:var(--radius-sm); margin-bottom:16px; font-size:0.88rem; display:flex; align-items:center; gap:10px; font-weight:500; }
+    .msg { padding:12px 15px; border-radius:var(--radius-sm); margin-bottom:16px; font-size:0.9rem; display:flex; align-items:center; gap:10px; font-weight:500; }
     .msg::before { font-size:1rem; }
-    .ok { background:var(--success-bg); border:1px solid var(--success-border); color:#6ee7b7; }
+    .ok { background:var(--success-bg); border:1px solid var(--success-border); color:#86efac; }
     .ok::before { content:'✓'; }
-    .err { background:var(--danger-bg); border:1px solid rgba(248,113,113,0.3); color:#fca5a5; }
+    .err { background:var(--danger-bg); border:1px solid rgba(239,68,68,0.35); color:#fca5a5; }
     .err::before { content:'!'; font-weight:800; }
 
     /* ── Section ── */
-    .section { margin-bottom:24px; }
+    .section { margin-bottom:28px; }
     .section-title {
       display:flex; align-items:center; gap:10px; margin-bottom:12px;
-      font-size:0.72rem; font-weight:650; text-transform:uppercase; letter-spacing:0.1em; color:var(--muted);
+      font-size:0.72rem; font-weight:700; text-transform:uppercase; letter-spacing:0.1em; color:var(--muted);
     }
     .section-title svg { width:14px; height:14px; stroke:var(--accent-light); fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
 
     /* ── Overview grid ── */
-    .overview { display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; margin-bottom:12px; }
+    .overview { display:grid; grid-template-columns:repeat(4, 1fr); gap:14px; margin-bottom:14px; }
     .kpi {
-      background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
-      padding:16px 18px; transition:border-color .2s, transform .2s; position:relative; overflow:hidden;
+      background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent 40%), var(--surface);
+      border:1px solid var(--border); border-radius:var(--radius);
+      padding:18px 18px 16px; transition:border-color .2s, box-shadow .2s; position:relative; overflow:hidden;
     }
     .kpi::before {
-      content:''; position:absolute; left:0; top:12px; bottom:12px; width:3px; border-radius:0 3px 3px 0;
-      background:var(--accent); opacity:0.7;
+      content:''; position:absolute; left:0; top:14px; bottom:14px; width:3px; border-radius:0 3px 3px 0;
+      background:var(--accent);
     }
     .kpi.green::before { background:var(--success); }
     .kpi.warn::before { background:var(--warning); }
-    .kpi:hover { border-color:var(--border-hover); transform:translateY(-1px); }
-    .kpi .label { color:var(--muted); font-size:0.78rem; font-weight:600; display:flex; align-items:center; gap:8px; }
+    .kpi:hover { border-color:var(--border-hover); box-shadow:0 8px 28px rgba(0,0,0,0.28); }
+    .kpi .label { color:var(--muted); font-size:0.8rem; font-weight:600; display:flex; align-items:center; gap:8px; }
     .kpi .label svg { width:15px; height:15px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
-    .kpi .value { font-family:var(--mono); font-size:1.85rem; font-weight:600; margin-top:8px; letter-spacing:-0.03em; font-variant-numeric:tabular-nums; }
+    .kpi .value { font-family:var(--mono); font-size:1.9rem; font-weight:700; margin-top:10px; letter-spacing:-0.04em; font-variant-numeric:tabular-nums; }
     .kpi.accent .label svg { stroke:var(--accent-light); }
     .kpi.green .label svg { stroke:var(--success); }
     .kpi.green .value { color:var(--success); }
     .kpi.warn .label svg { stroke:var(--warning); }
 
-    .usage-row { display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; }
+    .usage-row { display:grid; grid-template-columns:repeat(3, 1fr); gap:14px; }
     .usage-card {
       background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
-      padding:16px 18px; display:flex; gap:16px; align-items:center; transition:border-color .2s;
+      padding:16px 18px; display:flex; gap:16px; align-items:center; transition:border-color .2s, box-shadow .2s;
     }
-    .usage-card:hover { border-color:var(--border-hover); }
-    .usage-donut { position:relative; width:76px; height:76px; flex-shrink:0; }
+    .usage-card:hover { border-color:var(--border-hover); box-shadow:0 8px 28px rgba(0,0,0,0.22); }
+    .usage-donut { position:relative; width:78px; height:78px; flex-shrink:0; }
     .usage-donut svg { transform:rotate(-90deg); width:100%; height:100%; }
     .usage-donut .track { fill:none; stroke:var(--surface-2); stroke-width:3.2; }
-    .usage-donut .arc { fill:none; stroke-width:3.2; stroke-linecap:round; transition:stroke-dasharray .5s ease; }
+    .usage-donut .arc { fill:none; stroke-width:3.2; stroke-linecap:round; transition:stroke-dasharray .45s ease; }
     .usage-donut .arc-cpu { stroke:var(--accent-light); }
     .usage-donut .arc-mem { stroke:var(--success); }
     .usage-donut .arc-disk { stroke:var(--warning); }
-    .usage-donut .pct { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-family:var(--mono); font-size:0.95rem; font-weight:600; font-variant-numeric:tabular-nums; }
+    .usage-donut .pct { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-family:var(--mono); font-size:0.95rem; font-weight:700; font-variant-numeric:tabular-nums; }
     .usage-meta { display:flex; flex-direction:column; gap:2px; min-width:0; }
-    .usage-meta .title { font-size:0.68rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.08em; font-weight:650; }
-    .usage-meta .used { font-family:var(--mono); font-size:1.15rem; font-weight:600; letter-spacing:-0.02em; font-variant-numeric:tabular-nums; }
-    .usage-meta .total { font-size:0.74rem; color:var(--muted); }
+    .usage-meta .title { font-size:0.68rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.08em; font-weight:700; }
+    .usage-meta .used { font-family:var(--mono); font-size:1.15rem; font-weight:650; letter-spacing:-0.02em; font-variant-numeric:tabular-nums; }
+    .usage-meta .total { font-size:0.76rem; color:var(--muted); }
 
     /* ── Card / panel ── */
-    .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); }
+    .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; }
     .card-head {
       display:flex; align-items:center; gap:12px; flex-wrap:wrap;
       padding:16px 18px; border-bottom:1px solid var(--border);
+      background:rgba(255,255,255,0.01);
     }
-    .card-head h3 { font-size:1rem; font-weight:650; display:flex; align-items:center; gap:8px; letter-spacing:-0.02em; }
+    .card-head h3 { font-size:1rem; font-weight:700; display:flex; align-items:center; gap:8px; letter-spacing:-0.02em; }
     .card-head h3 svg { width:17px; height:17px; stroke:var(--accent-light); fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
-    .count-pill { font-family:var(--mono); font-size:0.74rem; font-weight:600; color:var(--accent-light); background:var(--accent-glow); border-radius:999px; padding:3px 10px; }
+    .count-pill { font-family:var(--mono); font-size:0.74rem; font-weight:600; color:var(--accent-light); background:var(--accent-glow); border-radius:999px; padding:4px 10px; }
     .card-body { padding:18px; }
 
     /* ── Search ── */
     .search-wrap { position:relative; margin-left:auto; min-width:260px; flex:1; max-width:440px; }
     .search-wrap svg { position:absolute; left:14px; top:50%; transform:translateY(-50%); width:16px; height:16px; stroke:var(--muted); fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; pointer-events:none; }
     .search-wrap input {
-      width:100%; padding:10px 14px 10px 40px; border-radius:var(--radius-sm);
-      border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:0.88rem; font-family:inherit;
-      transition:border-color .15s, box-shadow .15s;
+      width:100%; min-height:44px; padding:10px 14px 10px 40px; border-radius:var(--radius-sm);
+      border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:0.9rem; font-family:inherit;
+      transition:border-color .2s, box-shadow .2s;
     }
     .search-wrap input:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-glow); }
     .filter-hint { font-size:0.72rem; color:var(--muted); white-space:nowrap; }
-    .live-pill { display:inline-flex; align-items:center; gap:6px; font-size:0.68rem; font-weight:600; color:var(--muted); background:rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.18); border-radius:999px; padding:3px 9px; white-space:nowrap; letter-spacing:0.02em; }
+    .live-pill { display:inline-flex; align-items:center; gap:6px; font-size:0.68rem; font-weight:700; color:var(--muted); background:rgba(34,197,94,0.08); border:1px solid rgba(34,197,94,0.2); border-radius:999px; padding:5px 10px; white-space:nowrap; letter-spacing:0.02em; }
     .live-pill.stale { color:#fbbf24; background:rgba(245,158,11,0.08); border-color:rgba(245,158,11,0.25); }
-    .live-dot { width:6px; height:6px; border-radius:50%; background:#34d399; box-shadow:0 0 0 0 rgba(52,211,153,0.6); animation:livePulse 2s infinite; }
+    .live-dot { width:6px; height:6px; border-radius:50%; background:#22c55e; box-shadow:0 0 0 0 rgba(34,197,94,0.55); animation:livePulse 2s infinite; }
     .live-pill.stale .live-dot { background:#fbbf24; animation:none; }
-    @keyframes livePulse { 0%{box-shadow:0 0 0 0 rgba(52,211,153,0.5);} 70%{box-shadow:0 0 0 6px rgba(52,211,153,0);} 100%{box-shadow:0 0 0 0 rgba(52,211,153,0);} }
-    @media (prefers-reduced-motion: reduce) { .live-dot, .socket-badge .dot { animation:none; } }
+    @keyframes livePulse { 0%{box-shadow:0 0 0 0 rgba(34,197,94,0.5);} 70%{box-shadow:0 0 0 6px rgba(34,197,94,0);} 100%{box-shadow:0 0 0 0 rgba(34,197,94,0);} }
+    @media (prefers-reduced-motion: reduce) {
+      .live-dot, .socket-badge .dot, .spinner, .loading-bar::before { animation:none !important; }
+      .kpi, .usage-card, .quick-link, .btn, .btn-icon, .nav-links a { transition:none; }
+      .output-card { animation:none; }
+    }
 
     /* ── Inputs / buttons ── */
-    input, textarea, button { font-family:inherit; font-size:0.88rem; }
+    input, textarea, button { font-family:inherit; font-size:0.9rem; }
     .fld {
       border-radius:var(--radius-sm); border:1px solid var(--border);
-      background:var(--bg); color:var(--text); padding:10px 12px; transition:border-color .15s, box-shadow .15s;
+      background:var(--bg); color:var(--text); padding:11px 13px; min-height:44px;
+      transition:border-color .2s, box-shadow .2s;
     }
     .fld:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-glow); }
-    textarea.fld { width:100%; min-height:74px; resize:vertical; }
+    textarea.fld { width:100%; min-height:88px; resize:vertical; }
     .btn {
       display:inline-flex; align-items:center; justify-content:center; gap:7px;
-      font-weight:600; padding:10px 16px; border-radius:var(--radius-sm);
+      font-weight:650; min-height:44px; padding:10px 16px; border-radius:var(--radius-sm);
       border:1px solid var(--border); color:var(--text); background:var(--surface-2);
-      cursor:pointer; transition:all .15s; white-space:nowrap;
+      transition:background .2s, border-color .2s, box-shadow .2s; white-space:nowrap;
     }
     .btn:hover { border-color:var(--border-hover); background:var(--surface-3); }
-    .btn-primary { background:var(--accent); border-color:var(--accent); color:#fff; box-shadow:0 4px 16px var(--accent-glow); }
-    .btn-primary:hover { background:#0f766e; border-color:#0f766e; }
+    .btn:disabled { opacity:0.55; cursor:not-allowed; }
+    .btn-primary {
+      background:var(--cta); border-color:var(--cta); color:#fff;
+      box-shadow:0 4px 18px var(--cta-glow);
+    }
+    .btn-primary:hover { background:var(--cta-hover); border-color:var(--cta-hover); }
     .row { display:flex; gap:10px; flex-wrap:wrap; }
 
     /* ── Tabs (tools) ── */
     .tabs { display:flex; gap:4px; padding:12px 18px 0; flex-wrap:wrap; }
     .tab {
-      font-size:0.84rem; font-weight:600; padding:8px 14px; border-radius:var(--radius-sm) var(--radius-sm) 0 0;
-      background:transparent; border:1px solid transparent; border-bottom:none; color:var(--muted); cursor:pointer; transition:all .15s;
+      font-size:0.84rem; font-weight:650; min-height:40px; padding:8px 14px;
+      border-radius:var(--radius-sm) var(--radius-sm) 0 0;
+      background:transparent; border:1px solid transparent; border-bottom:none; color:var(--muted);
+      transition:color .2s, background .2s, border-color .2s;
       display:inline-flex; align-items:center; gap:7px;
     }
     .tab svg { width:14px; height:14px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
@@ -3083,95 +3179,90 @@ const indexHTML = `<!doctype html>
     .tool-panes { border-top:1px solid var(--border); padding:18px; }
     .tool-pane { display:none; }
     .tool-pane.active { display:block; }
-    .cmd-prefix { display:inline-flex; align-items:center; font-family:var(--mono); border:1px solid var(--border); background:var(--bg); color:var(--muted); border-radius:var(--radius-sm); padding:0 12px; font-size:0.82rem; }
-    .cmd-output { margin-top:12px; background:var(--bg); border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px; font-family:var(--mono); font-size:0.76rem; white-space:pre-wrap; word-break:break-word; color:var(--text-secondary); }
+    .cmd-prefix { display:inline-flex; align-items:center; font-family:var(--mono); border:1px solid var(--border); background:var(--bg); color:var(--muted); border-radius:var(--radius-sm); padding:0 12px; font-size:0.82rem; min-height:44px; }
+    .cmd-output { margin-top:12px; background:var(--bg); border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px; font-family:var(--mono); font-size:0.78rem; white-space:pre-wrap; word-break:break-word; color:var(--text-secondary); }
     .tool-meta { font-size:0.76rem; color:var(--muted); display:flex; align-items:center; }
-    /* ── Output viewer (inspect / logs / command) ── */
     #output-panel { scroll-margin-top:84px; }
-    .output-card { border-color:rgba(45,212,191,0.45); box-shadow:0 0 0 1px var(--accent-glow), 0 10px 40px rgba(0,0,0,0.35); animation:flashIn .9s ease; }
-    @keyframes flashIn { 0% { box-shadow:0 0 0 3px var(--accent-glow), 0 10px 40px rgba(0,0,0,0.35); } 100% { box-shadow:0 0 0 1px var(--accent-glow), 0 10px 40px rgba(0,0,0,0.35); } }
+    .output-card { border-color:rgba(59,130,246,0.45); box-shadow:0 0 0 1px var(--accent-glow), 0 10px 40px rgba(0,0,0,0.4); animation:flashIn .8s ease; }
+    @keyframes flashIn { 0% { box-shadow:0 0 0 3px var(--accent-glow), 0 10px 40px rgba(0,0,0,0.4); } 100% { box-shadow:0 0 0 1px var(--accent-glow), 0 10px 40px rgba(0,0,0,0.4); } }
     .mono-pill { font-family:var(--mono); font-size:0.72rem; font-weight:600; color:var(--accent-light); background:var(--accent-glow); border-radius:7px; padding:4px 10px; }
-    .output-pre { margin:0; padding:16px 18px; font-family:var(--mono); font-size:0.76rem; line-height:1.6; color:var(--text-secondary); white-space:pre; overflow:auto; max-height:60vh; }
+    .output-pre { margin:0; padding:16px 18px; font-family:var(--mono); font-size:0.78rem; line-height:1.65; color:var(--text-secondary); white-space:pre; overflow:auto; max-height:60vh; }
     .output-pre::-webkit-scrollbar { width:10px; height:10px; }
     .output-pre::-webkit-scrollbar-thumb { background:var(--surface-3); border-radius:6px; }
-    /* ── Runbook from AI analysis ── */
     .ai-runbook { border-top:1px solid var(--border); padding:16px 18px; }
-    .ai-runbook h4 { font-size:0.9rem; font-weight:650; margin-bottom:4px; display:flex; align-items:center; gap:8px; }
+    .ai-runbook h4 { font-size:0.9rem; font-weight:700; margin-bottom:4px; display:flex; align-items:center; gap:8px; }
     .ai-runbook h4 svg { width:15px; height:15px; stroke:var(--accent-light); fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
     .ai-runbook .hint { font-size:0.76rem; color:var(--muted); margin-bottom:12px; }
-    ol.ai-steps { list-style:none; counter-reset:aistep; margin:0 0 14px; padding:0; display:flex; flex-direction:column; gap:6px; }
-    ol.ai-steps li { counter-increment:aistep; display:flex; align-items:center; gap:11px; background:var(--bg); border:1px solid var(--border); border-radius:9px; padding:9px 12px; }
+    ol.ai-steps { list-style:none; counter-reset:aistep; margin:0 0 14px; padding:0; display:flex; flex-direction:column; gap:8px; }
+    ol.ai-steps li { counter-increment:aistep; display:flex; align-items:center; gap:11px; background:var(--bg); border:1px solid var(--border); border-radius:9px; padding:10px 12px; }
     ol.ai-steps li::before { content:counter(aistep); width:22px; height:22px; flex-shrink:0; border-radius:50%; background:var(--accent-glow); color:var(--accent-light); font-size:0.7rem; font-weight:700; display:flex; align-items:center; justify-content:center; font-family:var(--mono); }
     ol.ai-steps li code { font-family:var(--mono); font-size:0.76rem; color:var(--text-secondary); word-break:break-all; }
     .ai-actions { display:flex; gap:10px; flex-wrap:wrap; align-items:stretch; }
     .ai-actions form { margin:0; display:flex; gap:9px; }
     .ai-actions .save-form { flex:1; min-width:280px; }
     .ai-actions .save-form input { flex:1; min-width:160px; }
-    .tool-hint { font-size:0.8rem; color:var(--muted); line-height:1.7; margin-top:10px; }
+    .tool-hint { font-size:0.82rem; color:var(--muted); line-height:1.7; margin-top:10px; }
     .tool-hint code { font-family:var(--mono); background:var(--bg); padding:1px 6px; border-radius:5px; border:1px solid var(--border); font-size:0.74rem; color:var(--accent-light); }
 
     /* ── Table ── */
-    .table-scroll { overflow-x:auto; }
-    table { width:100%; border-collapse:collapse; font-size:0.86rem; }
+    .table-scroll { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+    table { width:100%; border-collapse:collapse; font-size:0.875rem; }
     thead th {
-      /* Sticky resolves against .table-scroll (overflow-x:auto makes it a
-         scroll container), so the offset is relative to the table's own top,
-         not the page. top:0 pins the header at its natural row position; a
-         non-zero offset would push it down onto the first body row. z-index
-         keeps it painted above the rows when the table scrolls horizontally. */
       position:sticky; top:0; z-index:5;
-      padding:10px 14px; text-align:left; color:var(--muted); font-weight:650;
-      font-size:0.68rem; text-transform:uppercase; letter-spacing:0.07em;
+      padding:12px 14px; text-align:left; color:var(--muted); font-weight:700;
+      font-size:0.68rem; text-transform:uppercase; letter-spacing:0.08em;
       background:var(--surface); border-bottom:1px solid var(--border); white-space:nowrap;
     }
     tbody td { padding:12px 14px; border-bottom:1px solid var(--border); vertical-align:middle; }
-    tbody tr { transition:background .12s; }
-    tbody tr:hover { background:rgba(45,212,191,0.035); }
+    tbody tr { transition:background .15s; }
+    tbody tr:hover { background:rgba(59,130,246,0.05); }
     tbody tr:last-child td { border-bottom:none; }
-    .c-name { font-weight:650; font-size:0.9rem; letter-spacing:-0.02em; }
-    .c-id { font-family:var(--mono); font-size:0.7rem; color:var(--muted); margin-top:2px; }
+    .c-name { font-weight:700; font-size:0.9rem; letter-spacing:-0.02em; }
+    .c-id { font-family:var(--mono); font-size:0.7rem; color:var(--muted); margin-top:3px; }
     .c-image { font-family:var(--mono); font-size:0.78rem; color:var(--text-secondary); word-break:break-all; }
-    .c-sub { font-size:0.72rem; color:var(--muted); margin-top:2px; }
+    .c-sub { font-size:0.72rem; color:var(--muted); margin-top:3px; }
     .pill {
-      display:inline-flex; align-items:center; gap:6px; font-size:0.72rem; font-weight:650;
+      display:inline-flex; align-items:center; gap:6px; font-size:0.72rem; font-weight:700;
       padding:4px 10px; border-radius:999px; text-transform:capitalize;
     }
     .pill::before { content:''; width:6px; height:6px; border-radius:50%; }
-    .pill-running { color:#6ee7b7; background:var(--success-bg); border:1px solid var(--success-border); }
+    .pill-running { color:#86efac; background:var(--success-bg); border:1px solid var(--success-border); }
     .pill-running::before { background:var(--success); }
-    .pill-other { color:#fcd34d; background:var(--warning-bg); border:1px solid rgba(251,191,36,0.25); }
+    .pill-other { color:#fcd34d; background:var(--warning-bg); border:1px solid rgba(251,191,36,0.28); }
     .pill-other::before { background:var(--warning); }
     .metric { font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:0.8rem; }
     .c-ports { font-family:var(--mono); font-size:0.76rem; color:var(--text-secondary); }
 
-    .actions { display:flex; gap:5px; align-items:center; }
+    .actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .actions form { margin:0; }
     .btn-icon {
-      width:32px; height:32px; padding:0; border-radius:8px; border:1px solid var(--border);
+      width:40px; height:40px; min-width:40px; min-height:40px; padding:0; border-radius:9px; border:1px solid var(--border);
       background:var(--surface-2); color:var(--text-secondary);
-      display:inline-flex; align-items:center; justify-content:center; cursor:pointer; position:relative; transition:all .15s;
+      display:inline-flex; align-items:center; justify-content:center; position:relative;
+      transition:color .2s, background .2s, border-color .2s;
     }
-    .btn-icon svg { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; pointer-events:none; }
-    .btn-icon:hover { transform:translateY(-1px); border-color:var(--border-hover); }
+    .btn-icon svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; pointer-events:none; }
+    .btn-icon:hover { border-color:var(--border-hover); color:var(--text); }
     .ic-start:hover { color:var(--success); border-color:var(--success-border); background:var(--success-bg); }
     .ic-stop:hover, .ic-restart:hover { color:var(--warning); border-color:rgba(251,191,36,0.3); background:var(--warning-bg); }
     .ic-info:hover, .ic-logs:hover { color:var(--accent-light); border-color:var(--accent); background:var(--accent-glow); }
-    .ic-ai:hover { color:#99f6e4; border-color:#0d9488; background:rgba(13,148,136,0.18); }
-    .ic-remove:hover { color:var(--danger); border-color:rgba(248,113,113,0.3); background:var(--danger-bg); }
+    .ic-ai:hover { color:#93c5fd; border-color:#3b82f6; background:rgba(59,130,246,0.18); }
+    .ic-remove:hover { color:var(--danger); border-color:rgba(239,68,68,0.35); background:var(--danger-bg); }
     .tip:hover::after {
       content:attr(data-tip); position:absolute; bottom:calc(100% + 7px); left:50%; transform:translateX(-50%);
-      white-space:nowrap; background:#0b1520; border:1px solid var(--border-hover); color:var(--text);
-      font-size:0.7rem; padding:5px 9px; border-radius:7px; z-index:20; font-weight:600;
+      white-space:nowrap; background:#0b1220; border:1px solid var(--border-hover); color:var(--text);
+      font-size:0.7rem; padding:5px 9px; border-radius:7px; z-index:var(--z-tip); font-weight:600;
+      pointer-events:none;
     }
     .empty-row td { text-align:center; padding:48px; color:var(--muted); }
 
-    /* ── Loading overlay (long Docker ops) ── */
-    .loading-overlay { position:fixed; inset:0; z-index:1000; display:none; align-items:center; justify-content:center; background:rgba(9,16,24,0.78); backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px); }
+    /* ── Loading overlay ── */
+    .loading-overlay { position:fixed; inset:0; z-index:var(--z-overlay); display:none; align-items:center; justify-content:center; background:rgba(5,7,12,0.8); backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px); }
     .loading-overlay.show { display:flex; }
     .loading-box { background:var(--surface); border:1px solid var(--border-hover); border-radius:var(--radius); padding:28px 36px; text-align:center; box-shadow:0 24px 70px rgba(0,0,0,0.55); min-width:280px; }
     .spinner { width:44px; height:44px; margin:0 auto 16px; border-radius:50%; border:3px solid var(--surface-3); border-top-color:var(--accent-light); border-right-color:var(--accent); animation:spin .8s linear infinite; }
     @keyframes spin { to { transform:rotate(360deg); } }
-    .loading-msg { font-weight:650; font-size:0.98rem; letter-spacing:-0.02em; }
+    .loading-msg { font-weight:700; font-size:0.98rem; letter-spacing:-0.02em; }
     .loading-sub { font-size:0.78rem; color:var(--muted); margin-top:4px; margin-bottom:16px; }
     .loading-bar { height:5px; border-radius:999px; background:var(--surface-3); overflow:hidden; position:relative; }
     .loading-bar::before { content:''; position:absolute; top:0; bottom:0; left:-40%; width:40%; border-radius:999px; background:linear-gradient(90deg, transparent, var(--accent-light), transparent); animation:indeterminate 1.1s ease-in-out infinite; }
@@ -3182,24 +3273,33 @@ const indexHTML = `<!doctype html>
     .quick-link {
       display:flex; align-items:center; gap:13px; flex:1; min-width:240px;
       background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
-      padding:15px 17px; transition:border-color .2s, transform .2s;
+      padding:16px 18px; transition:border-color .2s, box-shadow .2s;
     }
-    .quick-link:hover { border-color:var(--border-hover); transform:translateY(-1px); }
-    .quick-link .ql-icon { width:40px; height:40px; border-radius:11px; background:var(--accent-glow); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+    .quick-link:hover { border-color:var(--border-hover); box-shadow:0 8px 28px rgba(0,0,0,0.22); }
+    .quick-link .ql-icon { width:42px; height:42px; border-radius:11px; background:var(--accent-glow); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
     .quick-link .ql-icon svg { width:18px; height:18px; stroke:var(--accent-light); fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
-    .quick-link .ql-title { font-weight:650; font-size:0.92rem; letter-spacing:-0.02em; }
-    .quick-link .ql-desc { font-size:0.78rem; color:var(--muted); margin-top:1px; }
+    .quick-link .ql-title { font-weight:700; font-size:0.92rem; letter-spacing:-0.02em; }
+    .quick-link .ql-desc { font-size:0.8rem; color:var(--muted); margin-top:2px; line-height:1.45; }
 
     .small { font-size:0.78rem; color:var(--muted); }
+    .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
 
     @media (max-width:1100px) { .overview { grid-template-columns:repeat(2,1fr); } .usage-row { grid-template-columns:1fr; } }
     @media (max-width:760px) {
       .wrap { padding:0 16px; }
+      body { font-size:16px; }
+      .nav-links a { min-width:44px; min-height:44px; justify-content:center; }
       .nav-links a span { display:none; }
       .brand .tag { display:none; }
-      .overview { grid-template-columns:1fr 1fr; }
-      .search-wrap { max-width:none; min-width:0; }
+      .socket-badge { display:none; }
+      .overview { grid-template-columns:1fr 1fr; gap:10px; }
+      .search-wrap { max-width:none; min-width:0; flex-basis:100%; margin-left:0; }
+      .btn-icon { width:44px; height:44px; min-width:44px; min-height:44px; }
+      .actions { gap:8px; }
       thead th { position:static; }
+    }
+    @media (max-width:420px) {
+      .overview { grid-template-columns:1fr; }
     }
   </style>
 </head>
@@ -3361,7 +3461,7 @@ const indexHTML = `<!doctype html>
                       <form method="post" action="/containers/{{.ID}}/start"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-start tip" type="submit" data-tip="Start" aria-label="Start {{.Name}}"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button></form>
                       <form method="post" action="/containers/{{.ID}}/stop"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-stop tip" type="submit" data-tip="Stop" aria-label="Stop {{.Name}}"><svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1"/></svg></button></form>
                       <form method="post" action="/containers/{{.ID}}/restart"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-restart tip" type="submit" data-tip="Restart" aria-label="Restart {{.Name}}"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button></form>
-                      <form method="post" action="/containers/{{.ID}}/analyze"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-ai tip" type="submit" data-tip="Analyze with AI" aria-label="Analyze {{.Name}} with AI" data-loading="Analyzing container with AI… (this can take a while)"><svg viewBox="0 0 24 24"><path d="M12 3l1.9 4.6L18 9l-4.1 1.4L12 15l-1.9-4.6L6 9l4.1-1.4z"/><path d="M5 18l.9 2.2L8 21l-2.1.8L5 24l-.9-2.2L2 21l2.1-.8z"/></svg></button></form>
+                      <form method="post" action="/containers/{{.ID}}/analyze"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-ai tip" type="submit" data-tip="Analyze with AI" aria-label="Analyze {{.Name}} with AI" data-loading="Analyzing with light model…"><svg viewBox="0 0 24 24"><path d="M12 3l1.9 4.6L18 9l-4.1 1.4L12 15l-1.9-4.6L6 9l4.1-1.4z"/><path d="M5 18l.9 2.2L8 21l-2.1.8L5 24l-.9-2.2L2 21l2.1-.8z"/></svg></button></form>
                       <form method="post" action="/containers/{{.ID}}/inspect"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-info tip" type="submit" data-tip="Inspect" aria-label="Inspect {{.Name}}"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.35-4.35"/></svg></button></form>
                       <form method="post" action="/containers/{{.ID}}/logs"><input type="hidden" name="q" value="{{$.Search}}" /><button class="btn-icon ic-logs tip" type="submit" data-tip="Logs" aria-label="Logs {{.Name}}"><svg viewBox="0 0 24 24"><path d="M5 4h14v16H5z"/><path d="M8 8h8"/><path d="M8 12h8"/><path d="M8 16h6"/></svg></button></form>
                       <a class="btn-icon ic-logs tip" href="/logs?id={{.ID}}" target="_blank" rel="noopener" data-tip="Live logs" aria-label="Live logs {{.Name}}"><svg viewBox="0 0 24 24"><path d="M3 12h4l2 6 4-12 2 6h6"/></svg></a>
@@ -3447,7 +3547,7 @@ const indexHTML = `<!doctype html>
               </div>
             </form>
             {{if .AISuggestion}}<div class="cmd-output">Suggested: docker {{.AISuggestion}}{{if .AIExplanation}}\n\nWhy: {{.AIExplanation}}{{end}}</div>{{end}}
-            <div class="tool-hint">Powered by local Ollama. Set <code>OLLAMA_BASE_URL</code> env if needed. Suggestions are not executed automatically.</div>
+            <div class="tool-hint">Powered by local Ollama. Assistant uses <code>OLLAMA_MODEL</code>; container/error analysis uses the lighter <code>OLLAMA_ANALYZE_MODEL</code> (default <code>ornith:latest</code>). Suggestions are not executed automatically.</div>
           </div>
         </div>
       </div>

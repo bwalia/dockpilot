@@ -48,6 +48,8 @@ AUTH_FILE=$AUTH_FILE
 ADDR=:$PORT
 OLLAMA_BASE_URL=http://192.168.1.177:11434/v1
 OLLAMA_MODEL=llama3
+# Light model for container/IPAM/runbook analysis (avoid slow coder models).
+OLLAMA_ANALYZE_MODEL=ornith:latest
 EOF
 fi
 

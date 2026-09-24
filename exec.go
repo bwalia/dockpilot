@@ -211,7 +211,8 @@ func (a *App) handleExecWS(w http.ResponseWriter, r *http.Request) {
 		ws.writeText("dockpilot: pipe error: " + err.Error() + "\r\n")
 		return
 	}
-	cmd := exec.Command("docker", "exec", "-i", id, shell)
+	cmd := exec.Command(dockerBin(), "exec", "-i", id, shell)
+	cmd.Env = dockerCmdEnv()
 	cmd.Stdout = pw
 	cmd.Stderr = pw
 	stdin, err := cmd.StdinPipe()
