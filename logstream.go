@@ -76,7 +76,8 @@ func (a *App) handleLogStream(w http.ResponseWriter, r *http.Request) {
 		writeSSE(conn, bufrw, "error", "pipe error: "+err.Error())
 		return
 	}
-	cmd := exec.CommandContext(ctx, "docker", "logs", "-f", "--tail", tail, id)
+	cmd := exec.CommandContext(ctx, dockerBin(), "logs", "-f", "--tail", tail, id)
+	cmd.Env = dockerCmdEnv()
 	cmd.Stdout = pw
 	cmd.Stderr = pw
 	if err := cmd.Start(); err != nil {

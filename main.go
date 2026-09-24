@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -1063,7 +1064,7 @@ func executeAIStep(raw string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	args := strings.Fields(cmd)
-	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	out, err := exec.CommandContext(ctx, dockerBin(), args...).CombinedOutput()
 	text := strings.TrimSpace(string(out))
 	if ctx.Err() == context.DeadlineExceeded {
 		return text, fmt.Errorf("timed out after 30s (skipped interactive/long-running command)")
@@ -1281,8 +1282,10 @@ func executeRunbookCommand(raw string) (string, error) {
 	}
 
 	if strings.Contains(cmd, "$(") || strings.Contains(cmd, "`") {
-		shellCmd := "docker " + cmd
-		out, err := exec.Command("sh", "-c", shellCmd).CombinedOutput()
+		shellCmd := dockerBin() + " " + cmd
+		c := exec.Command("sh", "-c", shellCmd)
+		c.Env = dockerCmdEnv()
+		out, err := c.CombinedOutput()
 		text := strings.TrimSpace(string(out))
 		if err != nil {
 			if text == "" {
@@ -2432,10 +2435,60 @@ func computeHostUsage(stats map[string]containerStat, h hostInfo) HostUsage {
 // can never hang a page request or the background collector forever.
 const dockerCmdTimeout = 25 * time.Second
 
+var (
+	dockerBinOnce sync.Once
+	dockerBinPath string
+)
+
+// dockerBin resolves the docker CLI once. LaunchAgents / nohup often inherit a
+// minimal PATH that omits Homebrew (/opt/homebrew/bin), which is where docker
+// lives on Apple Silicon Macs.
+func dockerBin() string {
+	dockerBinOnce.Do(func() {
+		if v := strings.TrimSpace(os.Getenv("DOCKER_BIN")); v != "" {
+			dockerBinPath = v
+			return
+		}
+		if p, err := exec.LookPath("docker"); err == nil {
+			dockerBinPath = p
+			return
+		}
+		for _, candidate := range []string{
+			"/opt/homebrew/bin/docker",
+			"/usr/local/bin/docker",
+			"/usr/bin/docker",
+		} {
+			if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+				dockerBinPath = candidate
+				return
+			}
+		}
+		dockerBinPath = "docker"
+	})
+	return dockerBinPath
+}
+
+// dockerCmdEnv ensures PATH includes the directory that holds the docker CLI
+// so nested `$(docker …)` shell expansions in runbooks also work.
+func dockerCmdEnv() []string {
+	path := os.Getenv("PATH")
+	extras := []string{filepath.Dir(dockerBin()), "/opt/homebrew/bin", "/usr/local/bin"}
+	for _, extra := range extras {
+		if extra == "" || extra == "." {
+			continue
+		}
+		if !strings.Contains(path, extra) {
+			path = extra + string(os.PathListSeparator) + path
+		}
+	}
+	return append(os.Environ(), "PATH="+path)
+}
+
 func runDocker(args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), dockerCmdTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := exec.CommandContext(ctx, dockerBin(), args...)
+	cmd.Env = dockerCmdEnv()
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -2455,7 +2508,8 @@ func runDocker(args ...string) (string, error) {
 }
 
 func runDockerCombined(args ...string) (string, error) {
-	cmd := exec.Command("docker", args...)
+	cmd := exec.Command(dockerBin(), args...)
+	cmd.Env = dockerCmdEnv()
 	out, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
 	if err != nil {
