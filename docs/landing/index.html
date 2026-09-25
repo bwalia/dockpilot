@@ -3,361 +3,890 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>DockPilot | AI-Powered Docker Operations</title>
+    <title>DockPilot — AI-Powered Docker Operations</title>
     <meta
       name="description"
-      content="DockPilot is an AI-assisted Docker operations dashboard for container lifecycle management, logs inspection, and faster troubleshooting."
+      content="DockPilot is the Docker operations cockpit for containers, Compose stacks, live logs, web terminal, and local AI analysis — open source and self-hosted."
     />
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Sora:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <meta name="theme-color" content="#05070c" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
     <style>
       :root {
-        --bg: #091018;
-        --surface: #101925;
-        --surface-2: #182433;
-        --border: rgba(148,180,200,0.12);
-        --text: #eef4f8;
-        --muted: #8499ad;
-        --brand: #0d9488;
-        --brand-light: #2dd4bf;
-        --green: #34d399;
+        --bg: #05070c;
+        --bg-elevated: #0a0f18;
+        --surface: #0c111a;
+        --surface-2: #141b27;
+        --border: rgba(148, 163, 184, 0.14);
+        --border-strong: rgba(148, 163, 184, 0.28);
+        --text: #f1f5f9;
+        --text-secondary: #cbd5e1;
+        --muted: #94a3b8;
+        --primary: #3b82f6;
+        --primary-light: #60a5fa;
+        --primary-glow: rgba(59, 130, 246, 0.18);
+        --cta: #f97316;
+        --cta-hover: #ea580c;
+        --cta-glow: rgba(249, 115, 22, 0.28);
+        --success: #22c55e;
+        --success-bg: rgba(34, 197, 94, 0.12);
+        --radius: 12px;
+        --radius-sm: 8px;
+        --sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+        --mono: "Fira Code", ui-monospace, "SF Mono", Menlo, monospace;
+        --z-nav: 50;
+        --focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--primary-light);
+        --wrap: 1120px;
       }
+
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
       html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
       body {
-        font-family: "Sora", ui-sans-serif, system-ui, sans-serif;
+        font-family: var(--sans);
         color: var(--text);
         background:
-          radial-gradient(900px 420px at 92% -80px, rgba(45,212,191,0.14) 0%, transparent 55%),
-          radial-gradient(700px 380px at -10% 40%, rgba(56,189,248,0.06) 0%, transparent 50%),
+          radial-gradient(1000px 520px at 85% -120px, rgba(59, 130, 246, 0.16) 0%, transparent 55%),
+          radial-gradient(720px 420px at -10% 20%, rgba(249, 115, 22, 0.07) 0%, transparent 50%),
           var(--bg);
-        line-height: 1.55;
-        letter-spacing: -0.01em;
+        line-height: 1.6;
+        font-size: 16px;
+        letter-spacing: -0.011em;
         overflow-x: hidden;
         -webkit-font-smoothing: antialiased;
+        touch-action: manipulation;
       }
-      a { color: inherit; text-decoration: none; }
+      a { color: inherit; text-decoration: none; cursor: pointer; }
+      button { font-family: inherit; cursor: pointer; }
+      :focus-visible { outline: none; box-shadow: var(--focus); }
+      img { max-width: 100%; display: block; }
+      code, .mono { font-family: var(--mono); }
 
-      .wrap { width: 100%; max-width: 1080px; margin: 0 auto; padding: 0 20px; }
+      .wrap {
+        width: 100%;
+        max-width: var(--wrap);
+        margin: 0 auto;
+        padding: 0 20px;
+      }
+      @media (min-width: 768px) {
+        .wrap { padding: 0 28px; }
+      }
 
+      /* ── Nav ── */
       .nav {
-        position: sticky; top: 0; z-index: 50;
-        background: rgba(10,15,28,0.85);
-        backdrop-filter: blur(12px);
-        border-bottom: 1px solid var(--border);
+        position: sticky;
+        top: 0;
+        z-index: var(--z-nav);
+        padding: 12px 0 0;
+      }
+      .nav-shell {
+        margin: 0 auto;
+        max-width: calc(var(--wrap) + 24px);
+        padding: 0 12px;
       }
       .nav-inner {
-        display: flex; align-items: center; justify-content: space-between;
-        height: 60px; gap: 12px;
-      }
-      .logo { font-weight: 800; font-size: 1.2rem; letter-spacing: 0.3px; white-space: nowrap; }
-      .logo span { color: var(--brand); }
-      .nav-links { display: flex; align-items: center; gap: 8px; }
-      .nav-links a {
-        font-size: 0.875rem; font-weight: 500; color: var(--muted);
-        padding: 6px 12px; border-radius: 8px; transition: color 0.15s, background 0.15s;
-      }
-      .nav-links a:hover { color: var(--text); background: rgba(255,255,255,0.06); }
-      .btn {
-        display: inline-flex; align-items: center; gap: 6px;
-        font-size: 0.875rem; font-weight: 600; padding: 8px 16px; border-radius: 8px;
-        border: 1px solid var(--border); color: var(--text);
-        background: var(--surface); transition: all 0.15s;
-      }
-      .btn:hover { border-color: rgba(255,255,255,0.16); background: var(--surface-2); }
-      .btn-primary {
-        background: var(--brand); border-color: var(--brand); color: #fff;
-      }
-      .btn-primary:hover { background: #0f766e; border-color: #0f766e; }
-
-      .menu-toggle { display: none; background: none; border: none; color: var(--text); cursor: pointer; padding: 8px; }
-      .menu-toggle svg { display: block; }
-
-      .hero { padding: 64px 0 48px; text-align: center; }
-      .badge {
-        display: inline-block; font-size: 0.75rem; font-weight: 600;
-        letter-spacing: 0.08em; text-transform: uppercase; color: var(--green);
-        background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.25);
-        padding: 4px 12px; border-radius: 999px; margin-bottom: 20px;
-      }
-      .hero h1 { font-size: clamp(1.75rem, 5vw, 3rem); line-height: 1.15; margin-bottom: 16px; font-weight: 800; }
-      .hero .subtitle { color: var(--muted); font-size: clamp(0.95rem, 2.5vw, 1.125rem); max-width: 680px; margin: 0 auto 28px; }
-      .hero-actions { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
-
-      .highlights {
-        display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
-        padding: 32px 0;
-      }
-      .highlight {
-        background: var(--surface); border: 1px solid var(--border);
-        border-radius: 12px; padding: 20px; text-align: center;
-      }
-      .highlight-icon { font-size: 1.5rem; margin-bottom: 8px; display: block; }
-      .highlight h3 { font-size: 0.95rem; font-weight: 700; margin-bottom: 4px; }
-      .highlight p { font-size: 0.825rem; color: var(--muted); line-height: 1.5; }
-
-      .section { padding: 48px 0; }
-      .section-header { text-align: center; margin-bottom: 32px; }
-      .section-header h2 { font-size: clamp(1.35rem, 3vw, 1.85rem); font-weight: 800; margin-bottom: 8px; }
-      .section-header p { color: var(--muted); font-size: 0.95rem; }
-
-      .features { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-      .feature {
-        background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px;
-      }
-      .feature h3 { font-size: 1rem; font-weight: 700; margin-bottom: 6px; }
-      .feature p { font-size: 0.875rem; color: var(--muted); }
-
-      .screenshots { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-      .screenshot {
-        background: var(--surface); border: 1px solid var(--border);
-        border-radius: 12px; overflow: hidden;
-      }
-      .screenshot .shot {
-        min-height: 190px;
         display: flex;
         align-items: center;
-        justify-content: center;
-        color: var(--muted);
-        font-size: 0.875rem;
-        border-bottom: 1px solid var(--border);
-        background: linear-gradient(135deg, #111827 0%, #0f172a 100%);
+        justify-content: space-between;
+        gap: 16px;
+        min-height: 56px;
+        padding: 8px 14px;
+        background: rgba(5, 7, 12, 0.78);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
       }
-      .screenshot figcaption { padding: 12px 16px; font-size: 0.825rem; color: var(--muted); }
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 800;
+        font-size: 1.1rem;
+        letter-spacing: -0.04em;
+      }
+      .brand-mark {
+        width: 32px;
+        height: 32px;
+        border-radius: 9px;
+        background: linear-gradient(145deg, #3b82f6 0%, #1d4ed8 100%);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 0 18px rgba(59, 130, 246, 0.35);
+      }
+      .brand-mark svg {
+        width: 16px;
+        height: 16px;
+        stroke: #fff;
+        fill: none;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .brand span { color: var(--primary-light); }
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .nav-links a {
+        font-size: 0.875rem;
+        font-weight: 600;
+        color: var(--muted);
+        min-height: 40px;
+        padding: 8px 12px;
+        border-radius: var(--radius-sm);
+        display: inline-flex;
+        align-items: center;
+        transition: color 0.2s, background 0.2s;
+      }
+      .nav-links a:hover { color: var(--text); background: rgba(255, 255, 255, 0.05); }
+      .nav-cta { display: flex; align-items: center; gap: 8px; }
+      .menu-toggle {
+        display: none;
+        background: none;
+        border: none;
+        color: var(--text);
+        min-width: 44px;
+        min-height: 44px;
+        padding: 10px;
+        border-radius: var(--radius-sm);
+      }
 
-      .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; counter-reset: step; }
+      /* ── Buttons ── */
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        font-size: 0.9rem;
+        font-weight: 650;
+        min-height: 44px;
+        padding: 10px 18px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        color: var(--text);
+        background: var(--surface-2);
+        transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
+        white-space: nowrap;
+      }
+      .btn:hover { background: #1c2534; border-color: var(--border-strong); }
+      .btn svg {
+        width: 16px;
+        height: 16px;
+        stroke: currentColor;
+        fill: none;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .btn-primary {
+        background: var(--cta);
+        border-color: var(--cta);
+        color: #fff;
+        box-shadow: 0 6px 22px var(--cta-glow);
+      }
+      .btn-primary:hover { background: var(--cta-hover); border-color: var(--cta-hover); }
+      .btn-ghost {
+        background: transparent;
+        border-color: var(--border);
+      }
+      .btn-ghost:hover { background: rgba(255, 255, 255, 0.04); }
+
+      /* ── Hero ── */
+      .hero {
+        position: relative;
+        padding: 56px 0 0;
+        overflow: hidden;
+      }
+      .hero-copy {
+        max-width: 760px;
+        margin: 0 auto;
+        text-align: center;
+      }
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--success);
+        background: var(--success-bg);
+        border: 1px solid rgba(34, 197, 94, 0.28);
+        padding: 6px 12px;
+        border-radius: 999px;
+        margin-bottom: 22px;
+      }
+      .eyebrow .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--success);
+        box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.18);
+      }
+      .hero-brand {
+        font-size: clamp(2.4rem, 7vw, 4.2rem);
+        font-weight: 800;
+        letter-spacing: -0.05em;
+        line-height: 1.02;
+        margin-bottom: 14px;
+      }
+      .hero-brand span {
+        color: var(--primary-light);
+        text-shadow: 0 0 28px rgba(96, 165, 250, 0.35);
+      }
+      .hero h1 {
+        font-size: clamp(1.25rem, 3.2vw, 1.75rem);
+        font-weight: 650;
+        letter-spacing: -0.03em;
+        color: var(--text-secondary);
+        margin-bottom: 16px;
+        line-height: 1.3;
+      }
+      .hero .lede {
+        color: var(--muted);
+        font-size: clamp(1rem, 2.2vw, 1.125rem);
+        max-width: 620px;
+        margin: 0 auto 28px;
+        line-height: 1.65;
+      }
+      .hero-actions {
+        display: flex;
+        justify-content: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-bottom: 48px;
+      }
+
+      /* Full-bleed product stage */
+      .hero-stage {
+        position: relative;
+        width: 100%;
+        margin-top: 8px;
+        border-top: 1px solid var(--border);
+        background:
+          linear-gradient(180deg, rgba(59, 130, 246, 0.08), transparent 40%),
+          var(--bg-elevated);
+        overflow: hidden;
+      }
+      .hero-stage-inner {
+        max-width: var(--wrap);
+        margin: 0 auto;
+        padding: 28px 20px 0;
+      }
+      @media (min-width: 768px) {
+        .hero-stage-inner { padding: 36px 28px 0; }
+      }
+      .dash-mock {
+        border: 1px solid var(--border);
+        border-bottom: none;
+        border-radius: 14px 14px 0 0;
+        background: var(--surface);
+        box-shadow: 0 -20px 80px rgba(59, 130, 246, 0.12);
+        overflow: hidden;
+        transform: translateY(0);
+        animation: riseIn 0.7s ease-out both;
+      }
+      .dash-chrome {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.02);
+      }
+      .dash-dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--surface-2);
+        border: 1px solid var(--border-strong);
+      }
+      .dash-dot.r { background: #ef4444; border-color: transparent; }
+      .dash-dot.y { background: #fbbf24; border-color: transparent; }
+      .dash-dot.g { background: #22c55e; border-color: transparent; }
+      .dash-url {
+        margin-left: 8px;
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        color: var(--muted);
+      }
+      .dash-body { padding: 16px; display: grid; gap: 12px; }
+      .kpi-row {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 10px;
+      }
+      .kpi {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px;
+        background: rgba(255, 255, 255, 0.015);
+        position: relative;
+      }
+      .kpi::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 10px;
+        bottom: 10px;
+        width: 3px;
+        border-radius: 0 3px 3px 0;
+        background: var(--primary);
+      }
+      .kpi.ok::before { background: var(--success); }
+      .kpi.warn::before { background: #fbbf24; }
+      .kpi-label {
+        font-size: 0.68rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .kpi-value {
+        margin-top: 6px;
+        font-family: var(--mono);
+        font-size: 1.35rem;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+        font-variant-numeric: tabular-nums;
+      }
+      .kpi.ok .kpi-value { color: var(--success); }
+      .table-mock {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      .table-head, .table-row {
+        display: grid;
+        grid-template-columns: 1.4fr 1.6fr 0.8fr 0.7fr 0.9fr;
+        gap: 8px;
+        padding: 10px 12px;
+        align-items: center;
+      }
+      .table-head {
+        font-size: 0.65rem;
+        font-weight: 700;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        color: var(--muted);
+        border-bottom: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.02);
+      }
+      .table-row {
+        font-size: 0.8rem;
+        border-bottom: 1px solid var(--border);
+      }
+      .table-row:last-child { border-bottom: none; }
+      .table-row .name { font-weight: 700; }
+      .table-row .id, .table-row .img, .table-row .metric {
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        color: var(--muted);
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 0.7rem;
+        font-weight: 700;
+        padding: 3px 9px;
+        border-radius: 999px;
+        color: #86efac;
+        background: var(--success-bg);
+        border: 1px solid rgba(34, 197, 94, 0.28);
+      }
+      .pill::before {
+        content: "";
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--success);
+      }
+
+      /* ── Sections ── */
+      .section { padding: 72px 0; }
+      .section-head {
+        max-width: 640px;
+        margin: 0 auto 40px;
+        text-align: center;
+      }
+      .section-head .kicker {
+        display: inline-block;
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--primary-light);
+        margin-bottom: 10px;
+      }
+      .section-head h2 {
+        font-size: clamp(1.5rem, 3.5vw, 2.1rem);
+        font-weight: 800;
+        letter-spacing: -0.04em;
+        margin-bottom: 10px;
+        line-height: 1.15;
+      }
+      .section-head p {
+        color: var(--muted);
+        font-size: 1.02rem;
+      }
+
+      .problem {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px;
+      }
+      .problem-card {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 24px;
+        background: var(--surface);
+      }
+      .problem-card h3 {
+        font-size: 1.05rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        margin-bottom: 8px;
+      }
+      .problem-card p { color: var(--muted); font-size: 0.95rem; }
+      .problem-card.pain { border-color: rgba(239, 68, 68, 0.25); }
+      .problem-card.gain { border-color: rgba(34, 197, 94, 0.25); }
+
+      .features {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 14px;
+      }
+      .feature {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 22px;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 50%), var(--surface);
+        transition: border-color 0.2s, box-shadow 0.2s;
+      }
+      .feature:hover {
+        border-color: var(--border-strong);
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+      }
+      .feature-icon {
+        width: 40px;
+        height: 40px;
+        border-radius: 10px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--primary-glow);
+        margin-bottom: 14px;
+      }
+      .feature-icon svg {
+        width: 18px;
+        height: 18px;
+        stroke: var(--primary-light);
+        fill: none;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .feature h3 {
+        font-size: 1rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        margin-bottom: 6px;
+      }
+      .feature p { color: var(--muted); font-size: 0.9rem; line-height: 1.55; }
+
+      .steps {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+        counter-reset: step;
+      }
       .step {
-        background: var(--surface); border: 1px solid var(--border);
-        border-radius: 12px; padding: 20px 16px; counter-increment: step; position: relative;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 20px 16px;
+        background: var(--surface);
+        counter-increment: step;
       }
       .step::before {
-        content: counter(step); display: flex; align-items: center; justify-content: center;
-        width: 28px; height: 28px; border-radius: 50%; font-size: 0.8rem; font-weight: 700;
-        background: var(--brand); color: #fff; margin-bottom: 10px;
+        content: counter(step, decimal-leading-zero);
+        display: block;
+        font-family: var(--mono);
+        font-size: 0.78rem;
+        font-weight: 700;
+        color: var(--primary-light);
+        margin-bottom: 12px;
+      }
+      .step h3 {
+        font-size: 0.95rem;
+        font-weight: 700;
+        margin-bottom: 6px;
+        letter-spacing: -0.02em;
       }
       .step p { font-size: 0.85rem; color: var(--muted); line-height: 1.5; }
 
-      .install-block {
-        background: var(--surface); border: 1px solid var(--border);
-        border-radius: 12px; padding: 24px; overflow-x: auto;
+      .install-panel {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+        overflow: hidden;
       }
-      .install-block pre { margin: 0; color: var(--muted); font-size: 0.85rem; line-height: 1.7; white-space: pre-wrap; word-break: break-all; }
-      .install-block code { font-family: "SF Mono", "Fira Code", "Cascadia Code", Menlo, monospace; }
-      .install-tabs { display: flex; gap: 4px; margin-bottom: 16px; flex-wrap: wrap; }
+      .install-tabs {
+        display: flex;
+        gap: 4px;
+        padding: 12px;
+        border-bottom: 1px solid var(--border);
+        flex-wrap: wrap;
+        background: rgba(255, 255, 255, 0.015);
+      }
       .install-tab {
-        font-size: 0.8rem; font-weight: 600; padding: 6px 14px; border-radius: 6px;
-        background: transparent; border: 1px solid var(--border); color: var(--muted); cursor: pointer;
-        transition: all 0.15s;
+        font-size: 0.82rem;
+        font-weight: 650;
+        min-height: 40px;
+        padding: 8px 14px;
+        border-radius: var(--radius-sm);
+        background: transparent;
+        border: 1px solid transparent;
+        color: var(--muted);
+        transition: color 0.2s, background 0.2s, border-color 0.2s;
       }
-      .install-tab:hover, .install-tab.active { color: var(--text); background: var(--surface-2); border-color: rgba(255,255,255,0.16); }
-      .install-content { display: none; }
+      .install-tab:hover { color: var(--text); }
+      .install-tab.active {
+        color: var(--text);
+        background: var(--bg);
+        border-color: var(--border);
+      }
+      .install-content { display: none; padding: 20px; }
       .install-content.active { display: block; }
+      .install-content pre {
+        margin: 0;
+        color: var(--text-secondary);
+        font-family: var(--mono);
+        font-size: 0.84rem;
+        line-height: 1.75;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .closing {
+        text-align: center;
+        padding: 80px 0;
+        border-top: 1px solid var(--border);
+        background:
+          radial-gradient(700px 280px at 50% 0%, rgba(249, 115, 22, 0.12), transparent 60%),
+          transparent;
+      }
+      .closing h2 {
+        font-size: clamp(1.6rem, 4vw, 2.4rem);
+        font-weight: 800;
+        letter-spacing: -0.045em;
+        margin-bottom: 12px;
+      }
+      .closing p {
+        color: var(--muted);
+        max-width: 520px;
+        margin: 0 auto 24px;
+      }
+      .closing-actions {
+        display: flex;
+        justify-content: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
 
       .footer {
-        border-top: 1px solid var(--border); margin-top: 48px; padding: 24px 0;
-        text-align: center; color: var(--muted); font-size: 0.85rem;
+        border-top: 1px solid var(--border);
+        padding: 28px 0;
+        color: var(--muted);
+        font-size: 0.875rem;
       }
-      .footer a { color: var(--brand-light); }
+      .footer-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+      .footer a {
+        color: var(--primary-light);
+        font-weight: 600;
+      }
       .footer a:hover { text-decoration: underline; }
+      .footer-links { display: flex; gap: 16px; flex-wrap: wrap; }
 
-      @media (max-width: 768px) {
-        .menu-toggle { display: block; }
-        .nav-links {
-          display: none; position: absolute; top: 60px; left: 0; right: 0;
-          flex-direction: column; background: var(--bg); border-bottom: 1px solid var(--border);
-          padding: 12px 20px; gap: 4px;
-        }
-        .nav-links.open { display: flex; }
-        .nav-links a { padding: 10px 12px; width: 100%; }
-        .hero { padding: 40px 0 32px; }
-        .highlights { grid-template-columns: 1fr 1fr; }
-        .features { grid-template-columns: 1fr; }
-        .screenshots { grid-template-columns: 1fr; }
+      @keyframes riseIn {
+        from { opacity: 0; transform: translateY(18px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        html { scroll-behavior: auto; }
+        .dash-mock { animation: none; }
+        .btn, .nav-links a, .feature, .install-tab { transition: none; }
+      }
+
+      @media (max-width: 900px) {
+        .features { grid-template-columns: 1fr 1fr; }
         .steps { grid-template-columns: 1fr 1fr; }
+        .kpi-row { grid-template-columns: 1fr 1fr; }
+        .table-head, .table-row {
+          grid-template-columns: 1.2fr 1fr 0.8fr;
+        }
+        .table-head > :nth-child(n+4),
+        .table-row > :nth-child(n+4) { display: none; }
+      }
+      @media (max-width: 720px) {
+        .menu-toggle { display: inline-flex; align-items: center; justify-content: center; }
+        .nav-links {
+          display: none;
+          position: absolute;
+          top: calc(100% + 8px);
+          left: 12px;
+          right: 12px;
+          flex-direction: column;
+          align-items: stretch;
+          background: var(--bg);
+          border: 1px solid var(--border);
+          border-radius: 12px;
+          padding: 8px;
+          gap: 2px;
+        }
+        .nav-inner { position: relative; }
+        .nav-links.open { display: flex; }
+        .nav-links a { min-height: 44px; width: 100%; }
+        .nav-cta .btn-ghost { display: none; }
+        .problem { grid-template-columns: 1fr; }
+        .features { grid-template-columns: 1fr; }
+        .hero { padding-top: 36px; }
+        .hero-actions { flex-direction: column; align-items: stretch; }
+        .hero-actions .btn { width: 100%; }
       }
       @media (max-width: 480px) {
-        .highlights { grid-template-columns: 1fr; }
         .steps { grid-template-columns: 1fr; }
-        .hero-actions { flex-direction: column; align-items: center; }
-        .hero-actions .btn { width: 100%; justify-content: center; }
+        .kpi-row { grid-template-columns: 1fr; }
       }
     </style>
   </head>
   <body>
     <header class="nav">
-      <div class="wrap nav-inner">
-        <div class="logo">Dock<span>Pilot</span></div>
-        <button class="menu-toggle" aria-label="Toggle menu" onclick="document.querySelector('.nav-links').classList.toggle('open')">
-          <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
-        </button>
-        <nav class="nav-links">
-          <a href="#features">Features</a>
-          <a href="#screenshots">Screenshots</a>
-          <a href="#install">Install</a>
-          <a href="/">Dashboard</a>
-          <a href="https://github.com/bwalia" class="btn" style="margin-left:4px">GitHub</a>
-        </nav>
+      <div class="nav-shell">
+        <div class="nav-inner">
+          <a class="brand" href="/" aria-label="DockPilot home">
+            <span class="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 12l9 4 9-4"/><path d="M3 17l9 4 9-4"/></svg>
+            </span>
+            Dock<span>Pilot</span>
+          </a>
+          <button class="menu-toggle" type="button" aria-label="Toggle menu" aria-expanded="false" onclick="toggleMenu(this)">
+            <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+          </button>
+          <nav class="nav-links" id="nav-links">
+            <a href="#features">Features</a>
+            <a href="#how">How it works</a>
+            <a href="#install">Install</a>
+            <a href="https://github.com/bwalia/dockpilot">GitHub</a>
+          </nav>
+          <div class="nav-cta">
+            <a class="btn btn-ghost" href="https://github.com/bwalia/dockpilot">GitHub</a>
+            <a class="btn btn-primary" href="/">Open Dashboard</a>
+          </div>
+        </div>
       </div>
     </header>
 
     <main>
       <section class="hero">
-        <div class="wrap">
-          <span class="badge">Open Source · AI for Docker Ops</span>
-          <h1>Docker operations dashboard,<br>powered by AI.</h1>
-          <p class="subtitle">
-            DockPilot is one cockpit for your whole Docker environment — containers, images, volumes, networks and Compose stacks —
-            with an in-browser terminal, live log streaming, AI-assisted analysis, and an instant, always-warm dashboard.
+        <div class="wrap hero-copy">
+          <p class="eyebrow"><span class="dot" aria-hidden="true"></span> Open source · Self-hosted</p>
+          <p class="hero-brand">Dock<span>Pilot</span></p>
+          <h1>Docker operations, one cockpit.</h1>
+          <p class="lede">
+            Run containers, Compose stacks, live logs, and a web terminal from a single fast dashboard —
+            with local AI analysis when you need a second pair of eyes.
           </p>
           <div class="hero-actions">
-            <a class="btn btn-primary" href="/">Open Dashboard</a>
-            <a class="btn" href="#install">Quick Install</a>
-            <a class="btn" href="https://github.com/bwalia">Project Home</a>
+            <a class="btn btn-primary" href="/">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
+              Open Dashboard
+            </a>
+            <a class="btn btn-ghost" href="#install">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M4 19h16"/></svg>
+              Install locally
+            </a>
+          </div>
+        </div>
+
+        <div class="hero-stage" aria-hidden="true">
+          <div class="hero-stage-inner">
+            <div class="dash-mock">
+              <div class="dash-chrome">
+                <span class="dash-dot r"></span>
+                <span class="dash-dot y"></span>
+                <span class="dash-dot g"></span>
+                <span class="dash-url">localhost:8090 · live metrics</span>
+              </div>
+              <div class="dash-body">
+                <div class="kpi-row">
+                  <div class="kpi"><div class="kpi-label">Containers</div><div class="kpi-value">49</div></div>
+                  <div class="kpi ok"><div class="kpi-label">Running</div><div class="kpi-value">44</div></div>
+                  <div class="kpi warn"><div class="kpi-label">Stopped</div><div class="kpi-value">5</div></div>
+                  <div class="kpi"><div class="kpi-label">Images</div><div class="kpi-value">149</div></div>
+                </div>
+                <div class="table-mock">
+                  <div class="table-head">
+                    <span>Name</span><span>Image</span><span>State</span><span>CPU</span><span>Memory</span>
+                  </div>
+                  <div class="table-row">
+                    <span><div class="name">opsapi</div><div class="id">1f631a7a</div></span>
+                    <span class="img">opsapi:latest</span>
+                    <span><span class="pill">running</span></span>
+                    <span class="metric">2.1%</span>
+                    <span class="metric">185MiB</span>
+                  </div>
+                  <div class="table-row">
+                    <span><div class="name">opsapi-ollama</div><div class="id">6711ff21</div></span>
+                    <span class="img">ollama/ollama</span>
+                    <span><span class="pill">running</span></span>
+                    <span class="metric">28.6%</span>
+                    <span class="metric">560MiB</span>
+                  </div>
+                  <div class="table-row">
+                    <span><div class="name">jobshout-ui</div><div class="id">a91c02de</div></span>
+                    <span class="img">jobshout-ui:prod</span>
+                    <span><span class="pill">running</span></span>
+                    <span class="metric">0.4%</span>
+                    <span class="metric">92MiB</span>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </section>
 
-      <div class="wrap">
-        <div class="highlights">
-          <div class="highlight">
-            <span class="highlight-icon">⚡</span>
-            <h3>Instant Dashboard</h3>
-            <p>Warm metrics cache loads the dashboard in ~67ms — roughly 100× faster</p>
+      <section class="section" id="problem">
+        <div class="wrap">
+          <div class="section-head">
+            <span class="kicker">The gap</span>
+            <h2>CLI is powerful. Context-switching is not.</h2>
+            <p>Jumping between docker ps, logs, exec, and compose files slows incident response when you need a clear view of the host.</p>
           </div>
-          <div class="highlight">
-            <span class="highlight-icon">🖥</span>
-            <h3>Web Terminal</h3>
-            <p>Open a real shell into any running container, right in the browser</p>
-          </div>
-          <div class="highlight">
-            <span class="highlight-icon">📡</span>
-            <h3>Live Log Streaming</h3>
-            <p>Follow container logs in real time with tail, filter and download</p>
-          </div>
-          <div class="highlight">
-            <span class="highlight-icon">🧱</span>
-            <h3>Compose Stacks</h3>
-            <p>Deploy and control multi-service Compose projects as one unit</p>
+          <div class="problem">
+            <article class="problem-card pain">
+              <h3>Without DockPilot</h3>
+              <p>Scattered terminals, stale metrics, copy-paste commands, and no shared place to inspect stacks or turn AI findings into runnable steps.</p>
+            </article>
+            <article class="problem-card gain">
+              <h3>With DockPilot</h3>
+              <p>One warm dashboard for lifecycle actions, live logs, terminal, Compose, resources, and local Ollama analysis — self-hosted on your machine.</p>
+            </article>
           </div>
         </div>
-      </div>
+      </section>
 
-      <section id="features" class="section">
+      <section class="section" id="features">
         <div class="wrap">
-          <div class="section-header">
-            <h2>What teams get from DockPilot</h2>
-            <p>Practical Docker operations with fast feedback loops.</p>
+          <div class="section-head">
+            <span class="kicker">Capabilities</span>
+            <h2>Everything you reach for during an incident</h2>
+            <p>Built for operators who already know Docker — faster feedback, fewer tabs.</p>
           </div>
           <div class="features">
             <article class="feature">
-              <h3>⚡ Instant, Live Dashboard</h3>
-              <p>A warm background cache serves container and host metrics in ~67ms, then live-refreshes CPU, memory and status in place — no full page reloads.</p>
+              <div class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 2L3 14h8l-1 8 11-14h-8l1-6z"/></svg></div>
+              <h3>Instant live dashboard</h3>
+              <p>Warm metrics cache serves KPIs in tens of milliseconds, then refreshes CPU, memory, and status in place.</p>
             </article>
             <article class="feature">
-              <h3>🖥 In-Browser Web Terminal</h3>
-              <p>Exec straight into a running container over a WebSocket and run commands interactively, with the shell auto-selected and inputs validated.</p>
+              <div class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="M7 9l3 3-3 3"/><path d="M12 15h5"/></svg></div>
+              <h3>In-browser terminal</h3>
+              <p>Open a real shell into any running container over WebSocket — no SSH hop required.</p>
             </article>
             <article class="feature">
-              <h3>📡 Streaming Logs (Follow Mode)</h3>
-              <p>Tail container logs in real time over SSE with a tail-N selector, text filter and one-click download — not just a one-shot dump.</p>
+              <div class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 12h4l2 6 4-12 2 6h6"/></svg></div>
+              <h3>Live log streaming</h3>
+              <p>Follow logs over SSE with tail, filter, and download — not a one-shot dump.</p>
             </article>
             <article class="feature">
-              <h3>🧱 Compose Stack Management</h3>
-              <p>List Compose projects with their services grouped, deploy from a compose file, and run up / pull / restart / stop / down per stack.</p>
+              <div class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2l9 5-9 5-9-5z"/><path d="M3 12l9 5 9-5"/><path d="M3 17l9 5 9-5"/></svg></div>
+              <h3>Compose stack control</h3>
+              <p>Group services by project and run up, pull, restart, stop, or down as one unit.</p>
             </article>
             <article class="feature">
-              <h3>🖼 Images, Volumes & Networks</h3>
-              <p>Full resource management: pull and prune images, create and remove volumes and networks, with search, KPIs and safe confirmations.</p>
+              <div class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3l1.9 4.6L18 9l-4.1 1.4L12 15l-1.9-4.6L6 9l4.1-1.4z"/></svg></div>
+              <h3>Local AI analysis</h3>
+              <p>Ask Ollama to diagnose a container and turn findings into saved, runnable runbooks.</p>
             </article>
             <article class="feature">
-              <h3>🤖 AI Analysis & Runbooks</h3>
-              <p>Analyze containers with a local Ollama model and turn the findings into saved, runnable runbooks — plus plain-English Docker command suggestions.</p>
-            </article>
-            <article class="feature">
-              <h3>📊 Built-in Observability</h3>
-              <p>Prometheus <code>/metrics</code>, a <code>/healthz</code> probe and structured request logs are exposed out of the box for scraping and dashboards.</p>
-            </article>
-            <article class="feature">
-              <h3>🔐 Hardened by Default</h3>
-              <p>Basic Auth on every route plus CSRF protection on all state-changing actions and security headers (CSP, anti-clickjacking, nosniff).</p>
-            </article>
-            <article class="feature">
-              <h3>🌐 IPAM & Port Mapping</h3>
-              <p>Visualize networks, subnets, gateways and host-to-container port mappings, with AI-assisted analysis of your addressing layout.</p>
+              <div class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+              <h3>Hardened by default</h3>
+              <p>Basic Auth, CSRF on mutations, and security headers so a cockpit on the LAN stays gated.</p>
             </article>
           </div>
         </div>
       </section>
 
-      <section id="screenshots" class="section">
+      <section class="section" id="how">
         <div class="wrap">
-          <div class="section-header">
-            <h2>Screenshots</h2>
-            <p>DockPilot workflow snapshots.</p>
-          </div>
-          <div class="screenshots">
-            <figure class="screenshot">
-              <div class="shot">Dashboard overview panel</div>
-              <figcaption>Container KPIs, search, and action buttons for lifecycle management.</figcaption>
-            </figure>
-            <figure class="screenshot">
-              <div class="shot">AI + command execution panel</div>
-              <figcaption>AI command suggestion, Docker command runner, and output panel for inspect/logs results.</figcaption>
-            </figure>
-            <figure class="screenshot">
-              <div class="shot">Web terminal &amp; live logs</div>
-              <figcaption>Interactive shell into a running container and real-time, follow-mode log streaming.</figcaption>
-            </figure>
-            <figure class="screenshot">
-              <div class="shot">Stacks, images, volumes &amp; networks</div>
-              <figcaption>Manage Compose projects and Docker resources with search, KPIs and safe prune actions.</figcaption>
-            </figure>
-          </div>
-        </div>
-      </section>
-
-      <section class="section">
-        <div class="wrap">
-          <div class="section-header">
-            <h2>How DockPilot works</h2>
-            <p>Four simple steps for daily container operations.</p>
+          <div class="section-head">
+            <span class="kicker">Workflow</span>
+            <h2>Four steps from noise to action</h2>
+            <p>A short loop you can run all day without leaving the browser.</p>
           </div>
           <div class="steps">
-            <div class="step"><p>Search and select a container from the dashboard table.</p></div>
-            <div class="step"><p>Run lifecycle actions or open inspect/log outputs instantly.</p></div>
-            <div class="step"><p>Use AI assistant for suggested Docker commands when needed.</p></div>
-            <div class="step"><p>Execute command and review output directly in the command panel.</p></div>
+            <div class="step">
+              <h3>Find</h3>
+              <p>Filter the container table by name, image, state, or ports.</p>
+            </div>
+            <div class="step">
+              <h3>Act</h3>
+              <p>Start, stop, restart, inspect, or open logs and terminal.</p>
+            </div>
+            <div class="step">
+              <h3>Ask</h3>
+              <p>Run AI analysis when a container looks wrong or logs are noisy.</p>
+            </div>
+            <div class="step">
+              <h3>Apply</h3>
+              <p>Execute suggested Docker commands or save them as a runbook.</p>
+            </div>
           </div>
         </div>
       </section>
 
-      <section id="install" class="section">
+      <section class="section" id="install">
         <div class="wrap">
-          <div class="section-header">
-            <h2>Install and run</h2>
-            <p>Use source or binary workflow to start DockPilot quickly.</p>
+          <div class="section-head">
+            <span class="kicker">Get started</span>
+            <h2>Install and run in minutes</h2>
+            <p>Source, binary, or Docker — pick the path that matches your host.</p>
           </div>
-          <div class="install-block">
-            <div class="install-tabs">
-              <button class="install-tab active" onclick="switchTab('source')">Source</button>
-              <button class="install-tab" onclick="switchTab('binary')">Binary</button>
-              <button class="install-tab" onclick="switchTab('docker')">Docker</button>
+          <div class="install-panel">
+            <div class="install-tabs" role="tablist" aria-label="Install methods">
+              <button type="button" class="install-tab active" role="tab" aria-selected="true" data-tab="source" onclick="switchTab('source')">Source</button>
+              <button type="button" class="install-tab" role="tab" aria-selected="false" data-tab="binary" onclick="switchTab('binary')">Binary</button>
+              <button type="button" class="install-tab" role="tab" aria-selected="false" data-tab="docker" onclick="switchTab('docker')">Docker</button>
             </div>
-            <div id="tab-source" class="install-content active">
+            <div id="tab-source" class="install-content active" role="tabpanel">
 <pre><code>git clone https://github.com/bwalia/dockpilot.git
 cd dockpilot
 go build -o dockpilot .
 ./restart.sh
 # open http://localhost:8090/</code></pre>
             </div>
-            <div id="tab-binary" class="install-content">
+            <div id="tab-binary" class="install-content" role="tabpanel" hidden>
 <pre><code># from project root
 chmod +x dockpilot
 ./restart.sh
 ./status.sh</code></pre>
             </div>
-            <div id="tab-docker" class="install-content">
+            <div id="tab-docker" class="install-content" role="tabpanel" hidden>
 <pre><code>docker build -t dockpilot:local .
 docker run --rm -p 8090:8090 \
   -v /var/run/docker.sock:/var/run/docker.sock \
@@ -366,22 +895,52 @@ docker run --rm -p 8090:8090 \
           </div>
         </div>
       </section>
+
+      <section class="closing">
+        <div class="wrap">
+          <h2>Take the helm on your Docker host.</h2>
+          <p>Self-hosted, open source, and built for operators who want speed without giving up control.</p>
+          <div class="closing-actions">
+            <a class="btn btn-primary" href="/">Open Dashboard</a>
+            <a class="btn btn-ghost" href="https://github.com/bwalia/dockpilot">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>
+              View on GitHub
+            </a>
+          </div>
+        </div>
+      </section>
     </main>
 
     <footer class="footer">
-      <div class="wrap">
-        DockPilot © 2026 ·
-        <a href="/">Dashboard</a> ·
-        <a href="https://github.com/bwalia">GitHub</a>
+      <div class="wrap footer-inner">
+        <div>DockPilot © 2026 · Self-hosted Docker cockpit</div>
+        <div class="footer-links">
+          <a href="/">Dashboard</a>
+          <a href="#install">Install</a>
+          <a href="https://github.com/bwalia/dockpilot">GitHub</a>
+        </div>
       </div>
     </footer>
 
     <script>
+      function toggleMenu(btn) {
+        var links = document.getElementById("nav-links");
+        var open = links.classList.toggle("open");
+        btn.setAttribute("aria-expanded", open ? "true" : "false");
+      }
+
       function switchTab(name) {
-        document.querySelectorAll('.install-tab').forEach(function(t) { t.classList.remove('active'); });
-        document.querySelectorAll('.install-content').forEach(function(c) { c.classList.remove('active'); });
-        document.getElementById('tab-' + name).classList.add('active');
-        document.querySelector('[onclick="switchTab(\'' + name + '\')"]').classList.add('active');
+        document.querySelectorAll(".install-tab").forEach(function (tab) {
+          var active = tab.getAttribute("data-tab") === name;
+          tab.classList.toggle("active", active);
+          tab.setAttribute("aria-selected", active ? "true" : "false");
+        });
+        document.querySelectorAll(".install-content").forEach(function (panel) {
+          var active = panel.id === "tab-" + name;
+          panel.classList.toggle("active", active);
+          if (active) panel.removeAttribute("hidden");
+          else panel.setAttribute("hidden", "");
+        });
       }
     </script>
   </body>
