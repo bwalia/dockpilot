@@ -437,45 +437,46 @@ const resourceHTML = `<!doctype html>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{{.Title}} — DockPilot</title>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Sora:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Poppins:wght@400;500;600;700&family=Unbounded:wght@500;700&display=swap" rel="stylesheet">
   <style>
-    :root { --bg:#091018; --surface:#101925; --border:rgba(148,180,200,0.12); --accent:#0d9488; --success:#34d399; --warning:#fbbf24; --danger:#f87171; --muted:#8499ad; --text:#eef4f8; --sans:'Sora', ui-sans-serif, system-ui, sans-serif; --mono:'IBM Plex Mono', ui-monospace, monospace; }
+    :root { --bg:#091018; --surface:#101925; --border:rgba(148,180,200,0.12); --accent:#0d9488; --success:#34d399; --warning:#fbbf24; --danger:#f87171; --muted:#8499ad; --text:#eef4f8; --sans:"Poppins", "Helvetica Neue", Arial, sans-serif; --display:"Unbounded", "Poppins", sans-serif; --font-display:clamp(2rem, 1.2rem + 2.6vw, 3.25rem); --font-h1:clamp(1.75rem, 1.25rem + 2vw, 2.6rem); --font-h2:clamp(1.4rem, 1.1rem + 1.2vw, 2rem); --font-h3:clamp(1.1rem, 1rem + 0.45vw, 1.3rem); --font-h4:1.125rem; --font-lead:clamp(1.05rem, 1rem + 0.3vw, 1.2rem); --font-body:1rem; --font-sm:0.9rem; --font-xs:0.8rem; --font-eyebrow:0.75rem; --mono:"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
     * { box-sizing:border-box; }
     body { margin:0; background: radial-gradient(900px 420px at 92% -80px, rgba(45,212,191,0.14) 0%, transparent 55%), var(--bg); color:var(--text); font-family:var(--sans); -webkit-font-smoothing:antialiased; letter-spacing:-0.01em; }
     .wrap { width:100%; max-width:none; margin:0; padding:20px 24px; }
     .navbar { display:flex; align-items:center; gap:8px; margin-bottom:16px; flex-wrap:wrap; }
-    .navbar a { color:var(--muted); text-decoration:none; font-size:13px; font-weight:600; padding:6px 12px; border-radius:8px; border:1px solid transparent; }
+    .navbar a { color:var(--muted); text-decoration:none; font-size:var(--font-sm); font-weight:600; padding:6px 12px; border-radius:8px; border:1px solid transparent; }
     .navbar a:hover { color:var(--text); background:rgba(255,255,255,0.06); }
     .navbar a.active { color:var(--text); background:var(--accent); border-color:var(--accent); }
     .header { display:flex; justify-content:space-between; align-items:center; border:1px solid var(--border); background:var(--surface); border-radius:12px; padding:14px 16px; margin-bottom:14px; }
-    .title { font-size:22px; font-weight:700; letter-spacing:.4px; line-height:1.1; }
-    .small { font-size:12px; color:var(--muted); }
-    .badge { color:var(--muted); border:1px solid var(--border); border-radius:999px; padding:3px 10px; font-size:12px; }
-    .msg { padding:10px; border-radius:8px; margin:0 0 12px 0; font-size:13px; }
+    .title { font-family:var(--display); font-size:var(--font-h3); font-weight:700; letter-spacing:-0.02em; line-height:1.1; }
+    .small { font-size:var(--font-xs); color:var(--muted); }
+    .badge { color:var(--muted); border:1px solid var(--border); border-radius:999px; padding:3px 10px; font-size:var(--font-xs); }
+    .msg { padding:10px; border-radius:8px; margin:0 0 12px 0; font-size:var(--font-sm); }
     .err { background:#3f0d15; border:1px solid #7f1d1d; }
     .ok { background:#022c22; border:1px solid #065f46; }
     .kpis { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-bottom:14px; }
     .kpi { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:12px; }
-    .kpi .label { color:var(--muted); font-size:12px; }
-    .kpi .value { font-size:22px; font-weight:700; margin-top:6px; }
+    .kpi .label { color:var(--muted); font-size:var(--font-xs); }
+    .kpi .value { font-size:var(--font-h3); font-weight:700; margin-top:6px; }
     .panel { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:14px; margin-bottom:14px; }
     .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
     .toolbar form { display:flex; gap:6px; align-items:center; margin:0; }
-    input[type=text] { padding:8px 12px; background:var(--bg); border:1px solid var(--border); border-radius:8px; color:var(--text); font-family:inherit; font-size:13px; min-width:220px; }
+    input[type=text] { padding:8px 12px; background:var(--bg); border:1px solid var(--border); border-radius:8px; color:var(--text); font-family:inherit; font-size:var(--font-sm); min-width:220px; }
     input[type=text]:focus { outline:none; border-color:var(--accent); }
-    .btn { border:1px solid var(--accent); background:var(--accent); color:#fff; font-weight:600; padding:8px 14px; border-radius:8px; cursor:pointer; font-family:inherit; font-size:13px; }
+    .btn { border:1px solid var(--accent); background:var(--accent); color:#fff; font-weight:600; padding:8px 14px; border-radius:8px; cursor:pointer; font-family:inherit; font-size:var(--font-sm); }
     .btn:hover { opacity:0.9; }
     .btn.ghost { background:transparent; color:var(--muted); border-color:var(--border); }
     .btn.ghost:hover { color:var(--text); }
     .btn.danger { background:transparent; border-color:#7f1d1d; color:#fca5a5; }
     .btn.danger:hover { background:#3f0d15; }
-    .btn.sm { padding:5px 10px; font-size:12px; }
+    .btn.sm { padding:5px 10px; font-size:var(--font-xs); }
     .spacer { flex:1; }
-    table { width:100%; border-collapse:collapse; font-size:13px; }
+    table { width:100%; border-collapse:collapse; font-size:var(--font-sm); }
     th, td { padding:10px 8px; border-bottom:1px solid var(--border); text-align:left; vertical-align:middle; }
     th { color:var(--muted); font-weight:600; }
     td.actions { white-space:nowrap; text-align:right; }
     td.actions form { display:inline; }
+      h1, h2, .display-font { font-family:var(--display); letter-spacing:-0.02em; }
   </style>
 </head>
 <body>
