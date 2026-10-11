@@ -327,23 +327,24 @@ const terminalHTML = `<!doctype html>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Sora:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Poppins:wght@400;500;600;700&family=Unbounded:wght@500;700&display=swap" rel="stylesheet">
   <style>
-    :root { --bg:#091018; --surface:#101925; --border:rgba(148,180,200,0.12); --accent:#0d9488; --success:#34d399; --danger:#f87171; --muted:#8499ad; --text:#eef4f8; --sans:'Sora', ui-sans-serif, system-ui, sans-serif; --mono:'IBM Plex Mono', ui-monospace, monospace; }
+    :root { --bg:#091018; --surface:#101925; --border:rgba(148,180,200,0.12); --accent:#0d9488; --success:#34d399; --danger:#f87171; --muted:#8499ad; --text:#eef4f8; --sans:"Poppins", "Helvetica Neue", Arial, sans-serif; --display:"Unbounded", "Poppins", sans-serif; --font-display:clamp(2rem, 1.2rem + 2.6vw, 3.25rem); --font-h1:clamp(1.75rem, 1.25rem + 2vw, 2.6rem); --font-h2:clamp(1.4rem, 1.1rem + 1.2vw, 2rem); --font-h3:clamp(1.1rem, 1rem + 0.45vw, 1.3rem); --font-h4:1.125rem; --font-lead:clamp(1.05rem, 1rem + 0.3vw, 1.2rem); --font-body:1rem; --font-sm:0.9rem; --font-xs:0.8rem; --font-eyebrow:0.75rem; --mono:"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
     * { box-sizing:border-box; }
     body { margin:0; background:var(--bg); color:var(--text); font-family:var(--sans); height:100vh; display:flex; flex-direction:column; -webkit-font-smoothing:antialiased; }
     .bar { display:flex; align-items:center; gap:10px; padding:10px 16px; border-bottom:1px solid var(--border); background:var(--surface); flex-wrap:wrap; }
-    .bar a { color:var(--muted); text-decoration:none; font-size:13px; font-weight:600; padding:6px 12px; border-radius:8px; }
+    .bar a { color:var(--muted); text-decoration:none; font-size:var(--font-sm); font-weight:600; padding:6px 12px; border-radius:8px; }
     .bar a:hover { color:var(--text); background:rgba(255,255,255,0.06); }
-    .title { font-size:15px; font-weight:700; }
-    .small { font-size:12px; color:var(--muted); }
+    .title { font-family:var(--display); font-size:var(--font-h4); font-weight:700; letter-spacing:-0.02em; }
+    .small { font-size:var(--font-xs); color:var(--muted); }
     .spacer { flex:1; }
     .dot { width:9px; height:9px; border-radius:50%; display:inline-block; background:var(--muted); }
     .dot.on { background:var(--success); } .dot.off { background:var(--danger); }
-    select, button { font-family:inherit; font-size:13px; padding:6px 10px; border-radius:8px; border:1px solid var(--border); background:var(--bg); color:var(--text); cursor:pointer; }
+    select, button { font-family:inherit; font-size:var(--font-sm); padding:6px 10px; border-radius:8px; border:1px solid var(--border); background:var(--bg); color:var(--text); cursor:pointer; }
     button.accent { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
     #term { flex:1; padding:8px; }
     .empty { margin:auto; text-align:center; color:var(--muted); }
+      h1, h2, .display-font { font-family:var(--display); letter-spacing:-0.02em; }
   </style>
 </head>
 <body>
