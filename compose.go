@@ -360,6 +360,9 @@ const stacksHTML = `<!doctype html>
     .pill.run { background:#022c22; border:1px solid #065f46; color:#6ee7b7; }
     .pill.off { background:#1f2937; border:1px solid var(--border); color:var(--muted); }
     code { color:#5eead4; font-family:var(--mono); }
+    .site-sponsor { margin:28px 0 0; padding:18px 0 8px; border-top:1px solid var(--border); text-align:center; font-size:0.78rem; color:var(--muted); }
+    .site-sponsor a { color:var(--accent); font-weight:600; text-decoration:none; }
+    .site-sponsor a:hover { text-decoration:underline; }
       h1, h2, .display-font { font-family:var(--display); letter-spacing:-0.02em; }
   </style>
 </head>
@@ -441,6 +444,7 @@ const stacksHTML = `<!doctype html>
       <div class="panel"><span class="small">No compose stacks found. Deploy one above to get started.</span></div>
     {{end}}
     {{end}}
+    <footer class="site-sponsor">Sponsored by <a href="https://www.workstation.co.uk/en" target="_blank" rel="noopener">Workstation</a></footer>
   </div>
 </body>
 </html>

@@ -3301,6 +3301,9 @@ const indexHTML = `<!doctype html>
     @media (max-width:420px) {
       .overview { grid-template-columns:1fr; }
     }
+    .site-sponsor { margin:28px 0 0; padding:18px 0 8px; border-top:1px solid var(--border); text-align:center; font-size:0.78rem; color:var(--muted); }
+    .site-sponsor a { color:var(--accent-light); font-weight:600; text-decoration:none; }
+    .site-sponsor a:hover { text-decoration:underline; }
       h1, h2, .display-font { font-family:var(--display); letter-spacing:-0.02em; }
   </style>
 </head>
@@ -3553,6 +3556,7 @@ const indexHTML = `<!doctype html>
         </div>
       </div>
     </section>
+    <footer class="site-sponsor">Sponsored by <a href="https://www.workstation.co.uk/en" target="_blank" rel="noopener">Workstation</a></footer>
   </main>
 
   <script>
@@ -3811,6 +3815,9 @@ const ipamHTML = `<!doctype html>
       .kpis { grid-template-columns:1fr; }
       .net-grid { grid-template-columns:1fr; }
     }
+    .site-sponsor { margin:28px 0 0; padding:18px 0 8px; border-top:1px solid var(--border); text-align:center; font-size:0.78rem; color:var(--muted); }
+    .site-sponsor a { color:var(--accent); font-weight:600; text-decoration:none; }
+    .site-sponsor a:hover { text-decoration:underline; }
       h1, h2, .display-font { font-family:var(--display); letter-spacing:-0.02em; }
   </style>
 </head>
@@ -3969,6 +3976,7 @@ const ipamHTML = `<!doctype html>
     </div>
     {{end}}
 
+    <footer class="site-sponsor">Sponsored by <a href="https://www.workstation.co.uk/en" target="_blank" rel="noopener">Workstation</a></footer>
   </div>
 </body>
 </html>
@@ -4060,6 +4068,9 @@ const runbooksHTML = `<!doctype html>
     .back-link { color:var(--accent); text-decoration:none; font-size:var(--font-xs); }
     .back-link:hover { text-decoration:underline; }
     @media (max-width: 980px) { .wrap { padding:14px; } .grid { grid-template-columns:1fr; } }
+    .site-sponsor { margin:28px 0 0; padding:18px 0 8px; border-top:1px solid var(--border); text-align:center; font-size:0.78rem; color:var(--muted); }
+    .site-sponsor a { color:var(--accent); font-weight:600; text-decoration:none; }
+    .site-sponsor a:hover { text-decoration:underline; }
       h1, h2, .display-font { font-family:var(--display); letter-spacing:-0.02em; }
   </style>
 </head>
@@ -4199,6 +4210,7 @@ const runbooksHTML = `<!doctype html>
         {{end}}
       </div>
     </div>
+    <footer class="site-sponsor">Sponsored by <a href="https://www.workstation.co.uk/en" target="_blank" rel="noopener">Workstation</a></footer>
   </div>
 </body>
 </html>
