@@ -259,6 +259,9 @@ const logsHTML = `<!doctype html>
     .line .match { background:#f59e0b55; border-radius:3px; }
     .meta { color:var(--muted); font-style:italic; }
     .empty { margin:auto; text-align:center; color:var(--muted); }
+    .site-sponsor { flex-shrink:0; margin:0; padding:8px 16px; border-top:1px solid var(--border); text-align:center; font-size:0.72rem; color:var(--muted); background:var(--surface); }
+    .site-sponsor a { color:var(--accent); font-weight:600; text-decoration:none; }
+    .site-sponsor a:hover { text-decoration:underline; }
       h1, h2, .display-font { font-family:var(--display); letter-spacing:-0.02em; }
   </style>
 </head>
@@ -364,6 +367,7 @@ const logsHTML = `<!doctype html>
   {{else}}
   <div class="empty">No container selected. Open logs from the dashboard's container actions.</div>
   {{end}}
+  <footer class="site-sponsor">Sponsored by <a href="https://www.workstation.co.uk/en" target="_blank" rel="noopener">Workstation</a></footer>
 </body>
 </html>
 `

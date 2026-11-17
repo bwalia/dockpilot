@@ -344,6 +344,9 @@ const terminalHTML = `<!doctype html>
     button.accent { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
     #term { flex:1; padding:8px; }
     .empty { margin:auto; text-align:center; color:var(--muted); }
+    .site-sponsor { flex-shrink:0; margin:0; padding:8px 16px; border-top:1px solid var(--border); text-align:center; font-size:0.72rem; color:var(--muted); background:var(--surface); }
+    .site-sponsor a { color:var(--accent); font-weight:600; text-decoration:none; }
+    .site-sponsor a:hover { text-decoration:underline; }
       h1, h2, .display-font { font-family:var(--display); letter-spacing:-0.02em; }
   </style>
 </head>
@@ -405,6 +408,7 @@ const terminalHTML = `<!doctype html>
   {{else}}
   <div class="empty">No container selected. Open a terminal from the dashboard's container actions.</div>
   {{end}}
+  <footer class="site-sponsor">Sponsored by <a href="https://www.workstation.co.uk/en" target="_blank" rel="noopener">Workstation</a></footer>
 </body>
 </html>
 `
